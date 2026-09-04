@@ -11,17 +11,20 @@ from ..jobs import jobs
 
 
 class H3Backend(Backend):
-    """MiniMax H3 视频/音频后端，保留当前服务器已验证稳定的推理参数。"""
+    """MiniMax H3 视频/音频后端。"""
 
     kind = "video"
 
     VALID_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792"}
     VALID_SECONDS = {"4", "8", "12"}
+
+    # 旧版本统一使用 832x480 / 480x832，再放大到目标尺寸，细节损失明显。
+    # 这里把原生推理尺寸提高到更接近最终输出、且宽高均可被 32 整除的尺寸。
     INTERNAL_SIZE = {
-        "1280x720": (832, 480),
-        "1792x1024": (832, 480),
-        "720x1280": (480, 832),
-        "1024x1792": (480, 832),
+        "1280x720": (1024, 576),
+        "1792x1024": (1120, 640),
+        "720x1280": (576, 1024),
+        "1024x1792": (640, 1120),
     }
 
     def __init__(self) -> None:
@@ -97,6 +100,7 @@ class H3Backend(Backend):
         internal_width, internal_height = self.INTERNAL_SIZE[requested_size]
         target_width, target_height = [int(v) for v in requested_size.split("x")]
         frames = self.align_frames(seconds)
+        steps = int(payload.get("steps") or settings.h3_steps)
         seed = payload.get("seed")
         if seed is None:
             seed = random.randint(0, 2**31 - 1)
@@ -109,8 +113,8 @@ class H3Backend(Backend):
         keyframe_indices = payload.get("keyframe_indices") or None
 
         print(
-            f"[H3] {job_id} 开始生成：{internal_width}x{internal_height}, "
-            f"{seconds}s, {frames} 帧, {settings.h3_steps} steps",
+            f"[H3] {job_id} 开始生成：目标 {requested_size}，原生 "
+            f"{internal_width}x{internal_height}，{seconds}s，{frames} 帧，{steps} steps",
             flush=True,
         )
         jobs.update(job_id, progress=5)
@@ -120,7 +124,7 @@ class H3Backend(Backend):
             height=internal_height,
             width=internal_width,
             num_frames=frames,
-            num_inference_steps=settings.h3_steps,
+            num_inference_steps=steps,
             seed=seed,
             keyframes=keyframes,
             keyframe_indices=keyframe_indices,
@@ -136,12 +140,18 @@ class H3Backend(Backend):
         )
         jobs.update(job_id, progress=92)
 
+        vf = f"scale={target_width}:{target_height}:flags=lanczos"
+        if settings.h3_sharpen > 0:
+            # 仅做轻度亮度锐化，避免把 AI 生成噪点和压缩伪影一起放大。
+            vf += f",unsharp=5:5:{settings.h3_sharpen}:5:5:0.0"
+
+        crf = max(0, min(51, settings.h3_crf))
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-i", str(raw_path),
-            "-vf", f"scale={target_width}:{target_height}:flags=lanczos",
+            "-vf", vf,
             "-t", str(seconds),
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
@@ -151,7 +161,10 @@ class H3Backend(Backend):
         if raw_path.exists():
             os.remove(raw_path)
 
-        print(f"[H3] {job_id} 生成完成：{final_path}", flush=True)
+        print(
+            f"[H3] {job_id} 生成完成：{final_path}，CRF={crf}，锐化={settings.h3_sharpen}",
+            flush=True,
+        )
         return str(final_path)
 
 
