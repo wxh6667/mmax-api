@@ -8,22 +8,39 @@ MODEL_ROOT="/root/autodl-tmp/models"
 cd "$ROOT"
 mkdir -p "$ROOT/.deps" "$MODEL_ROOT"
 
-if [[ -f "$OLD_H3/api.pid" ]]; then
-  OLD_PID="$(cat "$OLD_H3/api.pid" || true)"
-  if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
-    echo "正在停止旧 H3 API，PID=$OLD_PID"
-    kill "$OLD_PID" || true
+stop_pid() {
+  local pid="$1"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "正在停止旧 H3 API，PID=$pid"
+    kill "$pid" || true
     for _ in $(seq 1 30); do
-      if ! kill -0 "$OLD_PID" 2>/dev/null; then
-        break
+      if ! kill -0 "$pid" 2>/dev/null; then
+        return 0
       fi
       sleep 1
     done
-    if kill -0 "$OLD_PID" 2>/dev/null; then
+    if kill -0 "$pid" 2>/dev/null; then
       echo "旧服务未正常退出，发送 SIGKILL。"
-      kill -9 "$OLD_PID" || true
+      kill -9 "$pid" || true
     fi
   fi
+}
+
+# 先按旧 PID 文件停止。
+if [[ -f "$OLD_H3/api.pid" ]]; then
+  stop_pid "$(cat "$OLD_H3/api.pid" 2>/dev/null || true)"
+fi
+
+# PID 文件可能过期或缺失，再按旧服务的完整命令行兜底查找。
+while read -r OLD_PID; do
+  [[ -n "$OLD_PID" ]] && stop_pid "$OLD_PID"
+done < <(
+  pgrep -f "^${OLD_H3}/venv/bin/python -m uvicorn api_server:app .*--port 6006( |$)" || true
+)
+
+if pgrep -f "^${OLD_H3}/venv/bin/python -m uvicorn api_server:app .*--port 6006( |$)" >/dev/null 2>&1; then
+  echo "旧 6006 服务仍在运行，停止迁移以避免破坏正在运行的环境。"
+  exit 1
 fi
 
 if [[ ! -f "$ROOT/.api_key" && -f "$OLD_H3/.api_key" ]]; then
@@ -86,5 +103,6 @@ echo "H3 模型已整理到：$MODEL_ROOT/h3"
 echo "Python 环境已整理到：$ROOT/.venv"
 echo "DiffSynth 已整理到：$DIFFSYNTH_PATH"
 echo ""
-echo "下一步先运行 Krea 准备脚本："
-echo "$PYTHON_BIN scripts/prepare_krea.py"
+echo "Krea 2 已准备完成的话，下一步直接执行："
+echo "bash scripts/start.sh"
+echo "bash scripts/healthcheck.sh"
