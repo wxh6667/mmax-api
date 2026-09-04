@@ -1,11 +1,11 @@
-name: Python 语法检查
+name: 代码语法检查
 
 on:
   push:
   pull_request:
 
 jobs:
-  compile:
+  syntax:
     runs-on: ubuntu-latest
     steps:
       - name: 拉取代码
@@ -18,3 +18,9 @@ jobs:
 
       - name: 检查 Python 语法
         run: python -m compileall -q mmax_api scripts/prepare_krea.py
+
+      - name: 检查 Shell 语法
+        run: |
+          for file in scripts/*.sh; do
+            bash -n "$file"
+          done
