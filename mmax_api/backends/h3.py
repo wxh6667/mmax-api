@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import subprocess
@@ -16,7 +17,8 @@ class H3Backend(Backend):
     kind = "video"
 
     VALID_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792"}
-    VALID_SECONDS = {"4", "8", "12"}
+    MIN_SECONDS = 1.0
+    MAX_SECONDS = 15.0
 
     # 旧版本统一使用 832x480 / 480x832，再放大到目标尺寸，细节损失明显。
     # 这里把原生推理尺寸提高到更接近最终输出、且宽高均可被 32 整除的尺寸。
@@ -49,11 +51,12 @@ class H3Backend(Backend):
         return True, None
 
     @staticmethod
-    def align_frames(seconds: int) -> int:
-        target = seconds * 24
+    def align_frames(seconds: float) -> int:
+        """按 24fps 换算时长，并向上对齐到 H3 要求的 17n+5 帧。"""
+        target = max(1, math.ceil(float(seconds) * 24.0))
         if target <= 5:
             return 5
-        return 17 * ((target - 5 + 16) // 17) + 5
+        return 17 * math.ceil((target - 5) / 17) + 5
 
     def _load(self):
         if self._pipe is not None:
@@ -95,7 +98,10 @@ class H3Backend(Backend):
         from diffsynth.utils.data.audio_video import write_video_audio
 
         pipe = self._load()
-        seconds = int(payload["seconds"])
+        seconds = float(payload["seconds"])
+        if not self.MIN_SECONDS <= seconds <= self.MAX_SECONDS:
+            raise ValueError(f"H3 时长必须在 {self.MIN_SECONDS:g} 到 {self.MAX_SECONDS:g} 秒之间。")
+
         requested_size = payload["size"]
         internal_width, internal_height = self.INTERNAL_SIZE[requested_size]
         target_width, target_height = [int(v) for v in requested_size.split("x")]
@@ -111,10 +117,11 @@ class H3Backend(Backend):
 
         keyframes = payload.get("keyframes") or None
         keyframe_indices = payload.get("keyframe_indices") or None
+        seconds_label = f"{seconds:g}"
 
         print(
             f"[H3] {job_id} 开始生成：目标 {requested_size}，原生 "
-            f"{internal_width}x{internal_height}，{seconds}s，{frames} 帧，{steps} steps",
+            f"{internal_width}x{internal_height}，{seconds_label}s，{frames} 帧，{steps} steps",
             flush=True,
         )
         jobs.update(job_id, progress=5)
@@ -150,7 +157,7 @@ class H3Backend(Backend):
             "ffmpeg", "-y", "-loglevel", "error",
             "-i", str(raw_path),
             "-vf", vf,
-            "-t", str(seconds),
+            "-t", seconds_label,
             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
