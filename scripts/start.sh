@@ -13,7 +13,6 @@ fi
 
 PYTHON_BIN="${MMAX_PYTHON_BIN:-$ROOT/.venv/bin/python}"
 DIFFSYNTH_PATH="${MMAX_DIFFSYNTH_PATH:-$ROOT/.deps/DiffSynth-Studio}"
-HOST="${MMAX_HOST:-0.0.0.0}"
 PORT="${MMAX_PORT:-6006}"
 RUNTIME_DIR="${MMAX_RUNTIME_DIR:-$ROOT/runtime}"
 
@@ -38,12 +37,10 @@ fi
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONPATH="$ROOT:$DIFFSYNTH_PATH${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUNBUFFERED=1
 
-nohup "$PYTHON_BIN" -m uvicorn mmax_api.api:app \
-  --host "$HOST" \
-  --port "$PORT" \
-  --workers 1 \
-  >"$LOG_FILE" 2>&1 &
-
+# mmax_api.run 会在导入 Uvicorn 前包装 stdout/stderr，
+# 因此 Uvicorn、DiffSynth、模型后端和 traceback 都统一带北京时间。
+nohup "$PYTHON_BIN" -m mmax_api.run >"$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
-echo "服务已启动，PID=$(cat "$PID_FILE")，日志：$LOG_FILE"
+echo "服务已启动，PID=$(cat "$PID_FILE")，端口：$PORT，日志：$LOG_FILE"
