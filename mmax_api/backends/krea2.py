@@ -1,7 +1,8 @@
+import math
 from pathlib import Path
 
 import torch
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from .base import Backend
 from ..config import settings
@@ -110,6 +111,35 @@ class Krea2Backend(Backend):
         return self._pipe
 
     @staticmethod
+    def _round_up_16(value: float) -> int:
+        return max(16, int(math.ceil(value / 16.0)) * 16)
+
+    @staticmethod
+    def _round_down_16(value: float) -> int:
+        return max(16, int(math.floor(value / 16.0)) * 16)
+
+    def _render_size(self, width: int, height: int) -> tuple[int, int]:
+        """计算内部原生渲染尺寸。
+
+        Krea 2 Turbo 官方推荐在 2K 附近推理，小尺寸直接原生采样会偏软。
+        因此小图会自动超采样；超大输出则限制原生像素，最后再高质量缩放到目标尺寸。
+        """
+        min_edge = max(16, int(settings.krea_render_min_edge))
+        max_pixels = max(256 * 256, int(settings.krea_render_max_pixels))
+
+        scale = max(1.0, min_edge / float(min(width, height)))
+        render_width = self._round_up_16(width * scale)
+        render_height = self._round_up_16(height * scale)
+
+        pixels = render_width * render_height
+        if pixels > max_pixels:
+            cap_scale = math.sqrt(max_pixels / float(pixels))
+            render_width = self._round_down_16(render_width * cap_scale)
+            render_height = self._round_down_16(render_height * cap_scale)
+
+        return render_width, render_height
+
+    @staticmethod
     @torch.no_grad()
     def _infer(pipe, *, prompt: str, seed: int | None, height: int, width: int,
                input_image: Image.Image | None, strength: float) -> Image.Image:
@@ -125,6 +155,7 @@ class Krea2Backend(Backend):
         else:
             strength = 1.0
 
+        # Krea 2 Turbo 是蒸馏模型，官方参数固定为 8 steps / cfg=1 / mu=1.15。
         pipe.scheduler.set_timesteps(
             8,
             denoising_strength=strength,
@@ -180,27 +211,44 @@ class Krea2Backend(Backend):
         pipe = self._load()
         width = int(payload["width"])
         height = int(payload["height"])
+        render_width, render_height = self._render_size(width, height)
         seed = payload.get("seed")
         input_image = payload.get("input_image")
         strength = float(payload.get("strength", 1.0))
 
         mode = "参考图编辑" if input_image is not None else "文生图"
-        print(f"[Krea] {job_id} 开始{mode}：{width}x{height}, strength={strength:.2f}", flush=True)
+        print(
+            f"[Krea] {job_id} 开始{mode}：输出 {width}x{height}，原生 "
+            f"{render_width}x{render_height}，固定 8 steps，strength={strength:.2f}",
+            flush=True,
+        )
         jobs.update(job_id, progress=5)
         image = self._infer(
             pipe,
             prompt=payload["prompt"],
             seed=seed,
-            height=height,
-            width=width,
+            height=render_height,
+            width=render_width,
             input_image=input_image,
             strength=strength,
         )
-        jobs.update(job_id, progress=95)
+        jobs.update(job_id, progress=92)
+
+        if image.size != (width, height):
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+            sharpen_percent = max(0, min(200, int(settings.krea_sharpen_percent)))
+            if sharpen_percent > 0:
+                image = image.filter(
+                    ImageFilter.UnsharpMask(radius=1.1, percent=sharpen_percent, threshold=2)
+                )
+        jobs.update(job_id, progress=96)
 
         output_path = settings.output_dir / "images" / f"{job_id}.png"
-        image.save(output_path, format="PNG")
-        print(f"[Krea] {job_id} 生成完成：{output_path}", flush=True)
+        image.save(output_path, format="PNG", optimize=True)
+        print(
+            f"[Krea] {job_id} 生成完成：{output_path}，原生 {render_width}x{render_height} -> 输出 {width}x{height}",
+            flush=True,
+        )
         return str(output_path)
 
 
