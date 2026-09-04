@@ -1,0 +1,20 @@
+name: Python 语法检查
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 检查 Python 语法
+        run: python -m compileall -q mmax_api scripts/prepare_krea.py
