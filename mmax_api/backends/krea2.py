@@ -80,9 +80,14 @@ class Krea2Backend(Backend):
         from diffsynth.pipelines.krea2 import Krea2Pipeline, ModelConfig
 
         print("===== 正在加载 Krea 2 Turbo =====", flush=True)
+
+        # 本项目把 ComfyUI FP8 权重一次性转换成普通 BF16 checkpoint。
+        # 对这类自定义 hash + state_dict converter 的本地文件，使用 disk offload
+        # 会触发 DiffSynth disk_map 的重命名映射问题，因此 Krea 统一改用 CPU RAM
+        # 作为 offload 层。服务器拥有充足系统内存，GPU 侧仍由 DiffSynth 按需搬运。
         vram_config = {
-            "offload_dtype": "disk",
-            "offload_device": "disk",
+            "offload_dtype": torch.bfloat16,
+            "offload_device": "cpu",
             "onload_dtype": torch.bfloat16,
             "onload_device": "cpu",
             "preparing_dtype": torch.bfloat16,
