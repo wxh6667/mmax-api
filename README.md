@@ -1,17 +1,17 @@
 # mmax-api
 
-A single local FastAPI service for:
+`mmax-api` 是一个面向本地 GPU 推理的统一 FastAPI 服务，目前整合：
 
-- **MiniMax H3** video + audio generation
-- **Krea 2 Turbo** image generation
+- **MiniMax H3**：视频 + 原生音频生成
+- **Krea 2 Turbo**：图片生成
 
-Both models share one public API port and one FIFO GPU worker. This prevents two heavyweight generation jobs from fighting for the same GPU.
+两个模型共用一个对外端口和一个 FIFO GPU 任务队列，避免在单张显卡上同时推理导致显存争抢或进程崩溃。
 
-> This repository contains service code only. Model weights are not redistributed. You are responsible for downloading model files and complying with each model's license.
+> 本仓库只提供服务代码、部署脚本和配置模板，不分发任何模型权重。模型文件需要使用者自行准备，并遵守对应模型的许可证。
 
-## API
+## 接口
 
-Default port: `6006`.
+默认端口为 `6006`：
 
 ```text
 GET  /health
@@ -28,25 +28,33 @@ GET  /v1/images/{image_id}
 GET  /v1/images/{image_id}/content
 ```
 
-All `/v1/*` routes require:
+所有 `/v1/*` 接口都需要：
 
 ```text
-Authorization: Bearer <your-key>
+Authorization: Bearer <你的 API Key>
 ```
 
-`/health` is intentionally unauthenticated for local process monitoring.
+`/health` 不需要鉴权，便于本机健康检查和进程守护。
 
-## Architecture
+## 架构
 
-The HTTP server accepts requests immediately and stores them as `queued`. A single background worker consumes jobs in FIFO order:
+HTTP 请求进入后立即创建 `queued` 任务，由唯一的后台 GPU worker 按提交顺序执行：
 
 ```text
-HTTP -> queue -> one GPU worker -> H3 or Krea -> output
+HTTP 请求
+   ↓
+统一 FIFO 队列
+   ↓
+唯一 GPU Worker
+   ├── MiniMax H3
+   └── Krea 2 Turbo
+   ↓
+outputs
 ```
 
-The process can keep both pipelines initialized with host-memory offload, while only one generation executes on the GPU at a time.
+模型可以通过 DiffSynth 的显存管理保留 CPU / 磁盘 offload 状态，但任何时刻只允许一个生成任务真正使用 GPU。
 
-## Install
+## 安装
 
 ```bash
 cd /root/autodl-tmp
@@ -56,106 +64,117 @@ cp .env.example .env
 bash ./scripts/install.sh
 ```
 
-On the original AutoDL layout, the scripts auto-detect:
+针对当前 AutoDL 服务器目录，脚本会自动优先使用：
 
 ```text
 /root/autodl-tmp/h3/venv/bin/python
 /root/autodl-tmp/h3/DiffSynth-Studio
 ```
 
-## Prepare Krea 2 from existing ComfyUI FP8 files
+也可以在 `.env` 中显式覆盖。
 
-A common ComfyUI setup has:
+## 准备 Krea 2
+
+如果服务器当前已有 ComfyUI 下载的 FP8 文件：
 
 ```text
 /root/autodl-tmp/imagegen/ComfyUI/models/diffusion_models/krea2_turbo_fp8_scaled.safetensors
 /root/autodl-tmp/imagegen/ComfyUI/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors
 ```
 
-`prepare_krea.py` converts those checkpoints to ordinary local BF16 safetensors and downloads only the tokenizer/config files plus the official Qwen Image VAE:
+执行：
 
 ```bash
-PYTHON=/root/autodl-tmp/h3/venv/bin/python
-$PYTHON scripts/prepare_krea.py
+/root/autodl-tmp/h3/venv/bin/python scripts/prepare_krea.py
 ```
 
-By default the prepared files are placed under:
+脚本会：
 
-```text
-/root/autodl-tmp/models/krea2/
-```
+1. 识别旧版 `_quantization_metadata` 和新版 `.comfy_quant` 两种 ComfyUI FP8 格式；
+2. 将 Krea DiT 和 Qwen3-VL 权重一次性反量化为普通 BF16 safetensors；
+3. 只补齐 Qwen3-VL tokenizer/config；
+4. 下载官方 Qwen Image VAE；
+5. 将最终文件整理到 `/root/autodl-tmp/models/krea2/`。
 
-The converter supports the ComfyUI `float8_e4m3fn` format in both legacy `_quantization_metadata` and current per-layer `.comfy_quant` forms.
+这样新 API 运行时不再依赖 ComfyUI，也不依赖 ComfyUI 的量化 runtime。
 
-After the new API has successfully generated both an image and a video, the old ComfyUI application can be removed if it is no longer needed.
+## 启动、停止和更新
 
-## Start and update
+启动：
 
 ```bash
 ./scripts/start.sh
 ./scripts/healthcheck.sh
 ```
 
-Logs:
+查看日志：
 
 ```bash
 tail -f runtime/api.log
 ```
 
-Stop/restart:
+停止和重启：
 
 ```bash
 ./scripts/stop.sh
 ./scripts/restart.sh
 ```
 
-Update from GitHub:
+从 GitHub 更新：
 
 ```bash
 ./scripts/update.sh
 ```
 
-`update.sh` performs a fast-forward-only pull, compiles the Python source, restarts the API, and checks `/health`.
+`update.sh` 会执行 `git pull --ff-only`、Python 语法检查、服务重启和 `/health` 检查。
 
-## Video request
+## 视频生成
 
 ```bash
 curl -X POST http://127.0.0.1:6006/v1/videos \
   -H "Authorization: Bearer $KEY" \
   -F 'model=minimax-h3' \
-  -F 'prompt=A cinematic street scene at night' \
+  -F 'prompt=雨夜街头的电影镜头，一名年轻男子看向镜头并说话' \
   -F 'seconds=4' \
   -F 'size=1280x720'
 ```
 
-Poll the returned ID with `GET /v1/videos/{id}` and download with `GET /v1/videos/{id}/content` after completion.
-
-### First/last frame
-
-The H3 route supports:
+返回任务 ID 后轮询：
 
 ```text
-input_reference   first frame
-image_tail        last frame
+GET /v1/videos/{id}
 ```
 
-Aliases `image`, `first_frame`, `image_start`, `last_frame`, `end_frame`, and `image_end` are also accepted. H3 uses keyframe indices `[0, -1]`, matching the DiffSynth examples.
+完成后下载：
 
-## Image request
+```text
+GET /v1/videos/{id}/content
+```
 
-Multipart:
+### 首帧和尾帧
+
+H3 接口支持：
+
+```text
+input_reference   首帧
+image_tail        尾帧
+```
+
+同时兼容 `image`、`first_frame`、`image_start`、`last_frame`、`end_frame`、`image_end` 等常见别名。首尾帧在 DiffSynth 中使用 `[0, -1]` 作为 keyframe 索引。
+
+## 图片生成
 
 ```bash
 curl -X POST http://127.0.0.1:6006/v1/images \
   -H "Authorization: Bearer $KEY" \
   -F 'model=krea-2-turbo' \
-  -F 'prompt=A black sports car on a rainy Tokyo street, cinematic photography' \
+  -F 'prompt=一辆黑色跑车停在雨夜东京街头，电影摄影' \
   -F 'size=1024x1024'
 ```
 
-JSON is also accepted.
+也支持 JSON 请求体。
 
-Krea 2 Turbo always uses:
+Krea 2 Turbo 固定使用官方 Turbo 参数：
 
 ```text
 num_inference_steps = 8
@@ -163,23 +182,30 @@ cfg_scale = 1
 mu = 1.15
 ```
 
-Poll with `GET /v1/images/{id}` and download with `GET /v1/images/{id}/content`.
+任务状态：
 
-## Notes
+```text
+GET /v1/images/{id}
+```
 
-- Jobs are stored in memory. Restarting the API clears job status history, but generated files remain in `outputs/`.
-- The server must run with `--workers 1`; multiple workers would create multiple independent GPU queues.
-- H3 keeps the proven 10-step default used by this deployment. Change `MMAX_H3_STEPS` if needed.
-- Krea image dimensions must be divisible by 16. The default pixel cap is `2048 × 2048`.
-- The Qwen Image VAE is deliberately downloaded from the official model instead of reusing an ambiguously detected ComfyUI VAE file.
+图片下载：
 
-## Upstream projects
+```text
+GET /v1/images/{id}/content
+```
 
-- DiffSynth-Studio: https://github.com/modelscope/DiffSynth-Studio
-- ComfyUI quantization format: https://github.com/Comfy-Org/ComfyUI
+## 运行说明
 
-Model weights remain governed by their respective upstream licenses.
+- 任务状态目前保存在进程内存中，服务重启后历史任务状态会清空，但已生成文件不会被删除。
+- uvicorn 必须使用 `--workers 1`，否则每个 worker 都会创建自己的 GPU 队列和模型实例。
+- H3 默认保留当前服务器已经验证稳定的 `10 steps`，可通过 `MMAX_H3_STEPS` 修改。
+- Krea 图片宽高必须能被 16 整除。
+- 默认限制最大约 `2048 × 2048` 像素，可通过环境变量调整。
+- Qwen Image VAE 使用官方模型文件，不复用当前服务器中 hash 识别异常的 ComfyUI VAE 文件。
 
-## License
+## 上游项目
 
-MIT for the service code in this repository.
+- DiffSynth-Studio：<https://github.com/modelscope/DiffSynth-Studio>
+- ComfyUI：<https://github.com/Comfy-Org/ComfyUI>
+
+本仓库的服务代码采用 MIT License；模型权重仍受各自上游许可证约束。
