@@ -46,7 +46,14 @@ class Settings:
     krea_vae: Path = _path("MMAX_KREA_VAE", "/root/autodl-tmp/models/krea2/qwen_image/vae/diffusion_pytorch_model.safetensors")
     krea_tokenizer: Path = _path("MMAX_KREA_TOKENIZER", "/root/autodl-tmp/models/krea2/qwen3vl_tokenizer")
     krea_vram_reserve_gb: float = float(os.getenv("MMAX_KREA_VRAM_RESERVE_GB", "2"))
-    krea_max_pixels: int = int(os.getenv("MMAX_KREA_MAX_PIXELS", "4194304"))
+
+    # 对外允许的最大图片像素。原生渲染会单独受 krea_render_max_pixels 约束，
+    # 因此较大的输出可以通过高质量缩放得到，不会无条件把超大分辨率塞进 GPU。
+    krea_max_pixels: int = int(os.getenv("MMAX_KREA_MAX_PIXELS", "8388608"))
+    # Turbo 官方在 2048x2048 下细节最好；4090D 默认先取 1536 最小边平衡质量和稳定性。
+    krea_render_min_edge: int = int(os.getenv("MMAX_KREA_RENDER_MIN_EDGE", "1536"))
+    krea_render_max_pixels: int = int(os.getenv("MMAX_KREA_RENDER_MAX_PIXELS", "4194304"))
+    krea_sharpen_percent: int = int(os.getenv("MMAX_KREA_SHARPEN_PERCENT", "55"))
 
     max_input_image_bytes: int = int(os.getenv("MMAX_MAX_INPUT_IMAGE_BYTES", str(20 * 1024 * 1024)))
 
