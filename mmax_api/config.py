@@ -27,11 +27,11 @@ class Settings:
 
     h3_enabled: bool = _bool("MMAX_H3_ENABLED", True)
     h3_model_id: str = os.getenv("MMAX_H3_MODEL_ID", "minimax-h3")
-    h3_dit: Path = _path("MMAX_H3_DIT", "/root/autodl-tmp/h3/models/DiffSynth-Studio/MiniMax-H3-NF4/minimax-h3-fl2va-pruned-nf4.safetensors")
-    h3_text_encoder: Path = _path("MMAX_H3_TEXT_ENCODER", "/root/autodl-tmp/h3/models/DiffSynth-Studio/MiniMax-H3-NF4/minimax-h3-text-encoder-nf4.safetensors")
-    h3_video_vae: Path = _path("MMAX_H3_VIDEO_VAE", "/root/autodl-tmp/h3/models/DiffSynth-Studio/MiniMax-H3-NF4/video_vae_nf4.safetensors")
-    h3_audio_vae: Path = _path("MMAX_H3_AUDIO_VAE", "/root/autodl-tmp/h3/models/DiffSynth-Studio/MiniMax-H3-NF4/audio_vae_nf4.safetensors")
-    h3_processor: Path = _path("MMAX_H3_PROCESSOR", "/root/autodl-tmp/h3/models/MiniMaxAI/MiniMax-H3/FL2VA/processor")
+    h3_dit: Path = _path("MMAX_H3_DIT", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/minimax-h3-fl2va-pruned-nf4.safetensors")
+    h3_text_encoder: Path = _path("MMAX_H3_TEXT_ENCODER", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/minimax-h3-text-encoder-nf4.safetensors")
+    h3_video_vae: Path = _path("MMAX_H3_VIDEO_VAE", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/video_vae_nf4.safetensors")
+    h3_audio_vae: Path = _path("MMAX_H3_AUDIO_VAE", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/audio_vae_nf4.safetensors")
+    h3_processor: Path = _path("MMAX_H3_PROCESSOR", "/root/autodl-tmp/models/h3/MiniMaxAI/MiniMax-H3/FL2VA/processor")
     h3_steps: int = int(os.getenv("MMAX_H3_STEPS", "10"))
     h3_vram_reserve_gb: float = float(os.getenv("MMAX_H3_VRAM_RESERVE_GB", "4"))
 
