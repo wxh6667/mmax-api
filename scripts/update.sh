@@ -20,11 +20,11 @@ echo "===== Python 语法检查 ====="
 "$PYTHON_BIN" -m compileall -q mmax_api scripts/prepare_krea.py
 
 echo "===== 重启服务 ====="
-"$ROOT/scripts/restart.sh"
+bash "$ROOT/scripts/restart.sh"
 
 sleep 2
 
 echo "===== 健康检查 ====="
-"$ROOT/scripts/healthcheck.sh"
+bash "$ROOT/scripts/healthcheck.sh"
 
 echo "更新完成。"
