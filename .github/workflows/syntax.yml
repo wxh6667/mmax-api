@@ -24,3 +24,6 @@ jobs:
           for file in scripts/*.sh; do
             bash -n "$file"
           done
+
+      - name: 检查 New API 插件语法
+        run: node --input-type=module --check < integrations/new-api/minimax-h3/plugin.js
