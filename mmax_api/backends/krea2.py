@@ -48,7 +48,9 @@ class Krea2Backend(Backend):
                 "model_hash": hash_model_file(str(settings.krea_text_encoder)),
                 "model_name": "krea2_text_encoder",
                 "model_class": "diffsynth.models.krea2_text_encoder.Krea2TextEncoder",
-                "state_dict_converter": "diffsynth.utils.state_dict_converters.krea2_text_encoder.Krea2TextEncoderStateDictConverter",
+                # 当前服务器使用的是 ComfyUI 打包后的 Qwen3-VL 文本编码器，
+                # 其键名省略了官方 checkpoint 中的 language_model 层级。
+                "state_dict_converter": "mmax_api.state_dict_converters.Krea2ComfyTextEncoderStateDictConverter",
             },
             {
                 "model_hash": hash_model_file(str(settings.krea_vae)),
