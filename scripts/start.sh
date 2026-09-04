@@ -11,11 +11,20 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-PYTHON_BIN="${MMAX_PYTHON_BIN:-/root/autodl-tmp/h3/venv/bin/python}"
-DIFFSYNTH_PATH="${MMAX_DIFFSYNTH_PATH:-/root/autodl-tmp/h3/DiffSynth-Studio}"
+PYTHON_BIN="${MMAX_PYTHON_BIN:-$ROOT/.venv/bin/python}"
+DIFFSYNTH_PATH="${MMAX_DIFFSYNTH_PATH:-$ROOT/.deps/DiffSynth-Studio}"
 HOST="${MMAX_HOST:-0.0.0.0}"
 PORT="${MMAX_PORT:-6006}"
 RUNTIME_DIR="${MMAX_RUNTIME_DIR:-$ROOT/runtime}"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "找不到 Python：$PYTHON_BIN，请先执行 bash scripts/install.sh。"
+  exit 1
+fi
+if [[ ! -d "$DIFFSYNTH_PATH/diffsynth" ]]; then
+  echo "找不到 DiffSynth：$DIFFSYNTH_PATH，请先执行 bash scripts/install.sh。"
+  exit 1
+fi
 
 mkdir -p "$RUNTIME_DIR"
 PID_FILE="$RUNTIME_DIR/api.pid"
