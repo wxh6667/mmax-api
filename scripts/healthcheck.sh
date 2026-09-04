@@ -42,7 +42,8 @@ missing = []
 for path, method in sorted(required):
     methods = paths.get(path, {})
     ok = method in methods
-    print(f"{method.upper():4} {path}: {\"OK\" if ok else \"MISSING\"}")
+    status = "OK" if ok else "MISSING"
+    print(f"{method.upper():4} {path}: {status}")
     if not ok:
         missing.append(f"{method.upper()} {path}")
 if missing:
