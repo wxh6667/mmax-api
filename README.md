@@ -103,8 +103,8 @@ bash ./scripts/install.sh
 启动：
 
 ```bash
-./scripts/start.sh
-./scripts/healthcheck.sh
+bash ./scripts/start.sh
+bash ./scripts/healthcheck.sh
 ```
 
 查看日志：
@@ -116,14 +116,14 @@ tail -f runtime/api.log
 停止和重启：
 
 ```bash
-./scripts/stop.sh
-./scripts/restart.sh
+bash ./scripts/stop.sh
+bash ./scripts/restart.sh
 ```
 
 从 GitHub 更新：
 
 ```bash
-./scripts/update.sh
+bash ./scripts/update.sh
 ```
 
 `update.sh` 会执行 `git pull --ff-only`、Python 语法检查、服务重启和 `/health` 检查。
