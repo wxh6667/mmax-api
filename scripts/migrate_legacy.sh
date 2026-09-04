@@ -52,12 +52,20 @@ if [[ ! -f "$ROOT/.env" ]]; then
 fi
 
 PYTHON_BIN="$ROOT/.venv/bin/python"
+DIFFSYNTH_PATH="$ROOT/.deps/DiffSynth-Studio"
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "没有找到可用的 Python 环境，请执行 bash scripts/install.sh。"
   exit 1
 fi
+if [[ ! -d "$DIFFSYNTH_PATH/diffsynth" ]]; then
+  echo "迁移后没有找到 DiffSynth-Studio：$DIFFSYNTH_PATH"
+  exit 1
+fi
 
-export PYTHONPATH="$ROOT:$ROOT/.deps/DiffSynth-Studio${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT:$DIFFSYNTH_PATH${PYTHONPATH:+:$PYTHONPATH}"
+
+echo "正在重新绑定 DiffSynth editable install 到新路径。"
+"$PYTHON_BIN" -m pip install -e "$DIFFSYNTH_PATH"
 "$PYTHON_BIN" -m pip install -e "$ROOT"
 
 for path in \
@@ -76,7 +84,7 @@ echo "===== 旧 H3 迁移完成 ====="
 echo "旧 6006 已停止。"
 echo "H3 模型已整理到：$MODEL_ROOT/h3"
 echo "Python 环境已整理到：$ROOT/.venv"
-echo "DiffSynth 已整理到：$ROOT/.deps/DiffSynth-Studio"
+echo "DiffSynth 已整理到：$DIFFSYNTH_PATH"
 echo ""
 echo "下一步先运行 Krea 准备脚本："
 echo "$PYTHON_BIN scripts/prepare_krea.py"
