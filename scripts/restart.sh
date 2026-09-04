@@ -2,5 +2,5 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-"$ROOT/scripts/stop.sh"
-"$ROOT/scripts/start.sh"
+bash "$ROOT/scripts/stop.sh"
+bash "$ROOT/scripts/start.sh"
