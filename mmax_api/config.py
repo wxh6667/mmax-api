@@ -32,8 +32,12 @@ class Settings:
     h3_video_vae: Path = _path("MMAX_H3_VIDEO_VAE", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/video_vae_nf4.safetensors")
     h3_audio_vae: Path = _path("MMAX_H3_AUDIO_VAE", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/audio_vae_nf4.safetensors")
     h3_processor: Path = _path("MMAX_H3_PROCESSOR", "/root/autodl-tmp/models/h3/MiniMaxAI/MiniMax-H3/FL2VA/processor")
-    h3_steps: int = int(os.getenv("MMAX_H3_STEPS", "10"))
+    # 官方同款 NF4 Pruned FL2VA 示例使用 50 steps。这里默认取 20，
+    # 在 4090D 上兼顾清晰度和速度；单次请求还可以通过 steps 覆盖。
+    h3_steps: int = int(os.getenv("MMAX_H3_STEPS", "20"))
     h3_vram_reserve_gb: float = float(os.getenv("MMAX_H3_VRAM_RESERVE_GB", "4"))
+    h3_crf: int = int(os.getenv("MMAX_H3_CRF", "18"))
+    h3_sharpen: float = float(os.getenv("MMAX_H3_SHARPEN", "0.35"))
 
     krea_enabled: bool = _bool("MMAX_KREA_ENABLED", True)
     krea_model_id: str = os.getenv("MMAX_KREA_MODEL_ID", "krea-2-turbo")
