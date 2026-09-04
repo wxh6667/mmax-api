@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mmax-api"
 version = "0.1.0"
-description = "One FastAPI endpoint for local MiniMax H3 video and Krea 2 Turbo image generation."
+description = "统一提供 MiniMax H3 视频生成与 Krea 2 Turbo 图片生成的本地 FastAPI 服务。"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
