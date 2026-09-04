@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmax-api"
+version = "0.1.0"
+description = "One FastAPI endpoint for local MiniMax H3 video and Krea 2 Turbo image generation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "wxh6667"}]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.12",
+  "Pillow>=10.0",
+  "safetensors>=0.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["mmax_api*"]
+
+[project.urls]
+Homepage = "https://github.com/wxh6667/mmax-api"
+Repository = "https://github.com/wxh6667/mmax-api"
