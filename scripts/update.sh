@@ -11,7 +11,12 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-PYTHON_BIN="${MMAX_PYTHON_BIN:-/root/autodl-tmp/h3/venv/bin/python}"
+PYTHON_BIN="${MMAX_PYTHON_BIN:-$ROOT/.venv/bin/python}"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "找不到 Python：$PYTHON_BIN，请先执行 bash scripts/install.sh。"
+  exit 1
+fi
 
 echo "===== 拉取最新代码 ====="
 git pull --ff-only
