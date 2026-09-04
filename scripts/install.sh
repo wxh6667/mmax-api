@@ -22,17 +22,30 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-PYTHON_BIN="${MMAX_PYTHON_BIN:-/root/autodl-tmp/h3/venv/bin/python}"
+PYTHON_BIN="${MMAX_PYTHON_BIN:-$ROOT/.venv/bin/python}"
+DIFFSYNTH_PATH="${MMAX_DIFFSYNTH_PATH:-$ROOT/.deps/DiffSynth-Studio}"
+
 if [[ ! -x "$PYTHON_BIN" ]]; then
-  echo "找不到 Python：$PYTHON_BIN"
-  exit 1
+  echo "未找到独立 Python 环境，正在创建 .venv。"
+  python3 -m venv "$ROOT/.venv"
+  PYTHON_BIN="$ROOT/.venv/bin/python"
 fi
 
-"$PYTHON_BIN" -m pip install -U pip
-"$PYTHON_BIN" -m pip install -e .
+"$PYTHON_BIN" -m pip install -U pip setuptools wheel
 
-mkdir -p runtime /root/autodl-tmp/outputs/videos /root/autodl-tmp/outputs/images
+if [[ ! -d "$DIFFSYNTH_PATH/.git" ]]; then
+  echo "正在获取 DiffSynth-Studio。"
+  mkdir -p "$(dirname "$DIFFSYNTH_PATH")"
+  git clone https://github.com/modelscope/DiffSynth-Studio.git "$DIFFSYNTH_PATH"
+fi
+
+"$PYTHON_BIN" -m pip install -e "$DIFFSYNTH_PATH"
+"$PYTHON_BIN" -m pip install -e "$ROOT"
+
+mkdir -p runtime /root/autodl-tmp/outputs/videos /root/autodl-tmp/outputs/images /root/autodl-tmp/models
 
 echo "安装完成。"
-echo "下一步如需准备 Krea 2，请执行："
+echo "Python：$PYTHON_BIN"
+echo "DiffSynth：$DIFFSYNTH_PATH"
+echo "如需准备 Krea 2，请执行："
 echo "$PYTHON_BIN scripts/prepare_krea.py"
