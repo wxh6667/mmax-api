@@ -17,8 +17,10 @@ class H3Backend(Backend):
     kind = "video"
 
     VALID_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792"}
-    MIN_SECONDS = 1.0
-    MAX_SECONDS = 15.0
+    MIN_SECONDS = 1
+    MAX_SECONDS = 15
+    # OpenAI Video / New API 常用 seconds 为整数；H3 本身支持最长 15 秒。
+    VALID_SECONDS = {str(value) for value in range(MIN_SECONDS, MAX_SECONDS + 1)}
 
     # 旧版本统一使用 832x480 / 480x832，再放大到目标尺寸，细节损失明显。
     # 这里把原生推理尺寸提高到更接近最终输出、且宽高均可被 32 整除的尺寸。
