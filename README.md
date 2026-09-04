@@ -54,28 +54,94 @@ outputs
 
 模型可以通过 DiffSynth 的显存管理保留 CPU / 磁盘 offload 状态，但任何时刻只允许一个生成任务真正使用 GPU。
 
-## 安装
+## 最终服务器目录
+
+推荐整理为：
+
+```text
+/root/autodl-tmp/
+├── mmax/                  # 本仓库
+│   ├── .venv/             # 独立 Python 环境
+│   ├── .deps/
+│   │   └── DiffSynth-Studio/
+│   ├── mmax_api/
+│   ├── scripts/
+│   └── runtime/
+├── models/
+│   ├── h3/
+│   └── krea2/
+└── outputs/
+    ├── videos/
+    └── images/
+```
+
+API 代码、Python 环境、DiffSynth、模型和输出彼此分离，旧 `/root/autodl-tmp/h3` 和 ComfyUI 最终可以完全删除。
+
+## 当前 AutoDL 服务器迁移
+
+如果服务器上已经有旧的 H3 API 和 ComfyUI Krea 权重，推荐按下面顺序迁移。
+
+先克隆本仓库：
+
+```bash
+cd /root/autodl-tmp
+git clone https://github.com/wxh6667/mmax-api.git mmax
+cd mmax
+```
+
+然后执行旧 H3 迁移：
+
+```bash
+bash scripts/migrate_legacy.sh
+```
+
+这个脚本会：
+
+1. 停止旧 H3 `6006` 服务；
+2. 把旧 API Key 迁移到 `mmax/.api_key`；
+3. 把旧 `venv` 原地移动成 `mmax/.venv`；
+4. 把旧 `DiffSynth-Studio` 原地移动到 `mmax/.deps/`；
+5. 把 H3 模型原地移动到 `/root/autodl-tmp/models/h3/`；
+6. 不复制大模型文件，因此不会临时多占一份 H3 磁盘空间。
+
+接着准备 Krea 2：
+
+```bash
+/root/autodl-tmp/mmax/.venv/bin/python scripts/prepare_krea.py
+```
+
+Krea 准备完成后启动统一 API：
+
+```bash
+bash scripts/start.sh
+bash scripts/healthcheck.sh
+```
+
+确认 H3 视频和 Krea 图片都能正常生成以后，可以删除旧目录：
+
+```bash
+bash scripts/cleanup_legacy.sh
+```
+
+清理脚本只有在新的 H3/Krea 模型、Python 环境和 DiffSynth 都已经存在时才会执行删除。
+
+## 全新安装
+
+如果不是从旧服务器迁移，可以直接：
 
 ```bash
 cd /root/autodl-tmp
 git clone https://github.com/wxh6667/mmax-api.git mmax
 cd mmax
 cp .env.example .env
-bash ./scripts/install.sh
+bash scripts/install.sh
 ```
 
-针对当前 AutoDL 服务器目录，脚本会自动优先使用：
-
-```text
-/root/autodl-tmp/h3/venv/bin/python
-/root/autodl-tmp/h3/DiffSynth-Studio
-```
-
-也可以在 `.env` 中显式覆盖。
+`install.sh` 会创建独立 `.venv`，并把 DiffSynth-Studio 放在 `mmax/.deps/DiffSynth-Studio`。模型仍需要自行准备到 `.env` 指定的位置。
 
 ## 准备 Krea 2
 
-如果服务器当前已有 ComfyUI 下载的 FP8 文件：
+当前迁移脚本默认读取这两个已有 ComfyUI FP8 文件：
 
 ```text
 /root/autodl-tmp/imagegen/ComfyUI/models/diffusion_models/krea2_turbo_fp8_scaled.safetensors
@@ -85,7 +151,7 @@ bash ./scripts/install.sh
 执行：
 
 ```bash
-/root/autodl-tmp/h3/venv/bin/python scripts/prepare_krea.py
+/root/autodl-tmp/mmax/.venv/bin/python scripts/prepare_krea.py
 ```
 
 脚本会：
@@ -103,8 +169,8 @@ bash ./scripts/install.sh
 启动：
 
 ```bash
-bash ./scripts/start.sh
-bash ./scripts/healthcheck.sh
+bash scripts/start.sh
+bash scripts/healthcheck.sh
 ```
 
 查看日志：
@@ -116,14 +182,14 @@ tail -f runtime/api.log
 停止和重启：
 
 ```bash
-bash ./scripts/stop.sh
-bash ./scripts/restart.sh
+bash scripts/stop.sh
+bash scripts/restart.sh
 ```
 
 从 GitHub 更新：
 
 ```bash
-bash ./scripts/update.sh
+bash scripts/update.sh
 ```
 
 `update.sh` 会执行 `git pull --ff-only`、Python 语法检查、服务重启和 `/health` 检查。
