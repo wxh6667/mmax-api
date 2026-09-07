@@ -3,6 +3,7 @@ import base64
 import hmac
 import io
 import json
+import math
 import time
 import urllib.request
 from pathlib import Path
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 
 from .backends.h3 import h3_backend
-from .backends.krea2 import krea2_backend
+from .backends.qwen_image import qwen_image_backend
 from .config import settings
 from .jobs import jobs
 from .scheduler import scheduler
@@ -31,7 +32,7 @@ class APIError(Exception):
         self.param = param
 
 
-app = FastAPI(title="mmax-api", version="0.2.0")
+app = FastAPI(title="mmax-api", version="0.3.0")
 
 
 @app.exception_handler(APIError)
@@ -74,14 +75,15 @@ def _model_object(model_id: str, kind: str, ready: bool, reason: str | None) -> 
     if kind == "image":
         capabilities = {
             "text_to_image": True,
-            "image_to_image": True,
-            "max_reference_images": 1,
+            "image_to_image": False,
+            "max_reference_images": 0,
             "mask_edit": False,
             "response_formats": ["url", "b64_json"],
+            "default_steps": settings.qwen_image_steps,
+            "default_cfg_scale": settings.qwen_image_cfg_scale,
         }
         endpoints = {
             "generate": "/v1/images/generations",
-            "edit": "/v1/images/edits",
         }
     else:
         capabilities = {
@@ -92,6 +94,8 @@ def _model_object(model_id: str, kind: str, ready: bool, reason: str | None) -> 
             "arbitrary_keyframes": True,
             "native_audio": True,
             "reference_to_video": False,
+            "min_seconds": h3_backend.MIN_SECONDS,
+            "max_seconds": h3_backend.MAX_SECONDS,
         }
         endpoints = {
             "create": "/v1/videos",
@@ -112,18 +116,10 @@ def _model_object(model_id: str, kind: str, ready: bool, reason: str | None) -> 
     }
 
 
-def _first_form_value(form, names):
-    for name in names:
-        value = form.get(name)
-        if value is not None and value != "":
-            return value
-    return None
-
-
 def _download_image(url: str) -> bytes:
     if not url.startswith(("http://", "https://")):
         raise APIError(400, "图片必须是上传文件、data:image 或 http/https URL。", param="image")
-    req = urllib.request.Request(url, headers={"User-Agent": "mmax-api/0.2"})
+    req = urllib.request.Request(url, headers={"User-Agent": "mmax-api/0.3"})
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             data = response.read(settings.max_input_image_bytes + 1)
@@ -174,8 +170,13 @@ def _parse_size(size: str) -> tuple[int, int]:
         raise APIError(400, "size 格式必须类似 1024x1024。", param="size") from exc
     if width <= 0 or height <= 0 or width % 16 or height % 16:
         raise APIError(400, "图片宽高必须为正数并且能被 16 整除。", param="size")
-    if width * height > settings.krea_max_pixels:
-        raise APIError(400, "图片像素数量超过服务器限制。", param="size")
+    pixels = width * height
+    if pixels > settings.qwen_image_max_pixels:
+        raise APIError(
+            400,
+            f"请求尺寸 {width}x{height}，共 {pixels:,} 像素；服务器上限 {settings.qwen_image_max_pixels:,} 像素。",
+            param="size",
+        )
     return width, height
 
 
@@ -198,6 +199,44 @@ def _parse_n(value) -> int:
     if n < 1 or n > 4:
         raise APIError(400, "n 目前支持 1 到 4。", param="n")
     return n
+
+
+def _parse_steps(value, default: int, *, max_steps: int = 80) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        steps = int(value)
+    except Exception as exc:
+        raise APIError(400, "steps 必须是整数。", param="steps") from exc
+    if not 1 <= steps <= max_steps:
+        raise APIError(400, f"steps 必须在 1 到 {max_steps} 之间。", param="steps")
+    return steps
+
+
+def _parse_cfg_scale(value) -> float:
+    if value in (None, ""):
+        return settings.qwen_image_cfg_scale
+    try:
+        cfg = float(value)
+    except Exception as exc:
+        raise APIError(400, "cfg_scale 必须是数字。", param="cfg_scale") from exc
+    if not math.isfinite(cfg) or not 0.0 < cfg <= 20.0:
+        raise APIError(400, "cfg_scale 必须大于 0 且不超过 20。", param="cfg_scale")
+    return cfg
+
+
+def _parse_seconds(value) -> float:
+    try:
+        seconds = float(value)
+    except Exception as exc:
+        raise APIError(400, "seconds 必须是数字。", param="seconds") from exc
+    if not math.isfinite(seconds) or not h3_backend.MIN_SECONDS <= seconds <= h3_backend.MAX_SECONDS:
+        raise APIError(
+            400,
+            f"seconds 必须在 {h3_backend.MIN_SECONDS:g} 到 {h3_backend.MAX_SECONDS:g} 秒之间。",
+            param="seconds",
+        )
+    return seconds
 
 
 def _parse_response_format(value) -> str:
@@ -227,28 +266,38 @@ def _openai_image_item(job: dict, prompt: str, response_format: str) -> dict:
     if response_format == "b64_json":
         item["b64_json"] = encoded
     else:
-        # 使用自包含 data URL，经过任意网关代理后仍可直接访问，不依赖上游内部地址或 API Key。
         item["url"] = f"data:image/png;base64,{encoded}"
     return item
 
 
-async def _run_image_jobs(*, prompt: str, model: str, width: int, height: int,
-                          seed: int | None, n: int, response_format: str,
-                          input_image: Image.Image | None = None, strength: float = 1.0) -> dict:
+async def _run_image_jobs(
+    *,
+    prompt: str,
+    negative_prompt: str,
+    model: str,
+    width: int,
+    height: int,
+    seed: int | None,
+    n: int,
+    steps: int,
+    cfg_scale: float,
+    response_format: str,
+) -> dict:
     submitted = []
     for index in range(n):
         current_seed = None if seed is None else seed + index
         payload = {
             "prompt": prompt,
+            "negative_prompt": negative_prompt,
             "width": width,
             "height": height,
             "size": f"{width}x{height}",
             "seed": current_seed,
-            "input_image": input_image,
-            "strength": strength,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
         }
         job = jobs.create("image", model, payload)
-        scheduler.submit(job["id"], lambda job_id, p=payload: krea2_backend.generate(job_id, p))
+        scheduler.submit(job["id"], lambda job_id, p=payload: qwen_image_backend.generate(job_id, p))
         submitted.append(job["id"])
 
     completed = [await _wait_for_job(job_id) for job_id in submitted]
@@ -261,13 +310,13 @@ async def _run_image_jobs(*, prompt: str, model: str, width: int, height: int,
 @app.get("/health")
 def health():
     h3_ok, h3_reason = h3_backend.ready()
-    krea_ok, krea_reason = krea2_backend.ready()
+    qwen_ok, qwen_reason = qwen_image_backend.ready()
     return {
         "status": "ok",
         "queue_pending": scheduler.pending,
         "models": {
             h3_backend.model_id: {"ready": h3_ok, "reason": h3_reason},
-            krea2_backend.model_id: {"ready": krea_ok, "reason": krea_reason},
+            qwen_image_backend.model_id: {"ready": qwen_ok, "reason": qwen_reason},
         },
     }
 
@@ -275,19 +324,19 @@ def health():
 @app.get("/v1/models")
 def list_models(_=Depends(require_auth)):
     h3_ok, h3_reason = h3_backend.ready()
-    krea_ok, krea_reason = krea2_backend.ready()
+    qwen_ok, qwen_reason = qwen_image_backend.ready()
     return {
         "object": "list",
         "data": [
             _model_object(h3_backend.model_id, "video", h3_ok, h3_reason),
-            _model_object(krea2_backend.model_id, "image", krea_ok, krea_reason),
+            _model_object(qwen_image_backend.model_id, "image", qwen_ok, qwen_reason),
         ],
     }
 
 
 @app.get("/v1/models/{model_id}")
 def retrieve_model(model_id: str, _=Depends(require_auth)):
-    for backend in (h3_backend, krea2_backend):
+    for backend in (h3_backend, qwen_image_backend):
         if backend.model_id == model_id:
             ok, reason = backend.ready()
             return _model_object(backend.model_id, backend.kind, ok, reason)
@@ -297,76 +346,50 @@ def retrieve_model(model_id: str, _=Depends(require_auth)):
 @app.post("/v1/images/generations")
 async def create_image_generation(request: Request, _=Depends(require_auth)):
     content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        body = await request.json()
-    else:
-        body = await request.form()
+    body = await request.json() if "application/json" in content_type else await request.form()
 
     prompt = str(body.get("prompt") or "").strip()
-    model = str(body.get("model") or krea2_backend.model_id).strip()
+    negative_prompt = str(body.get("negative_prompt") or "").strip()
+    model = str(body.get("model") or qwen_image_backend.model_id).strip()
     size = str(body.get("size") or "1024x1024").strip()
     seed = _parse_seed(body.get("seed"))
     n = _parse_n(body.get("n"))
+    steps = _parse_steps(body.get("steps") or body.get("num_inference_steps"), settings.qwen_image_steps)
+    cfg_scale = _parse_cfg_scale(body.get("cfg_scale") or body.get("guidance_scale"))
     response_format = _parse_response_format(body.get("response_format"))
 
     if not prompt:
         raise APIError(400, "prompt 不能为空。", param="prompt")
-    if model != krea2_backend.model_id:
+    if model != qwen_image_backend.model_id:
         raise APIError(404, f"图片模型 '{model}' 不存在。", "model_not_found", "model")
     width, height = _parse_size(size)
 
     return await _run_image_jobs(
         prompt=prompt,
+        negative_prompt=negative_prompt,
         model=model,
         width=width,
         height=height,
         seed=seed,
         n=n,
+        steps=steps,
+        cfg_scale=cfg_scale,
         response_format=response_format,
     )
 
 
 @app.post("/v1/images/edits")
 async def create_image_edit(request: Request, _=Depends(require_auth)):
-    form = await request.form()
-    prompt = str(form.get("prompt") or "").strip()
-    model = str(form.get("model") or krea2_backend.model_id).strip()
-    size = str(form.get("size") or "1024x1024").strip()
-    seed = _parse_seed(form.get("seed"))
-    n = _parse_n(form.get("n"))
-    response_format = _parse_response_format(form.get("response_format"))
-
-    if not prompt:
-        raise APIError(400, "prompt 不能为空。", param="prompt")
-    if model != krea2_backend.model_id:
+    content_type = request.headers.get("content-type", "")
+    body = await request.json() if "application/json" in content_type else await request.form()
+    model = str(body.get("model") or qwen_image_backend.model_id).strip()
+    if model != qwen_image_backend.model_id:
         raise APIError(404, f"图片模型 '{model}' 不存在。", "model_not_found", "model")
-    if form.get("mask") not in (None, ""):
-        raise APIError(400, "当前 Krea 2 后端不支持 mask 局部编辑。", "unsupported_capability", "mask")
-
-    images = form.getlist("image") if hasattr(form, "getlist") else [form.get("image")]
-    images = [value for value in images if value not in (None, "")]
-    if len(images) != 1:
-        raise APIError(400, "当前 Krea 2 后端必须且只能提供 1 张参考图。", "unsupported_capability", "image")
-    input_image = await _load_image(images[0], "image")
-
-    try:
-        strength = float(form.get("strength") or 0.65)
-    except Exception as exc:
-        raise APIError(400, "strength 必须是 0 到 1 之间的数字。", param="strength") from exc
-    if not 0.0 < strength <= 1.0:
-        raise APIError(400, "strength 必须大于 0 且不超过 1。", param="strength")
-
-    width, height = _parse_size(size)
-    return await _run_image_jobs(
-        prompt=prompt,
-        model=model,
-        width=width,
-        height=height,
-        seed=seed,
-        n=n,
-        response_format=response_format,
-        input_image=input_image,
-        strength=strength,
+    raise APIError(
+        400,
+        "qwen-image-2512 是文生图模型，不支持图片编辑；图片编辑需要单独部署 Qwen-Image-Edit 系列模型。",
+        "unsupported_capability",
+        "model",
     )
 
 
@@ -430,21 +453,19 @@ async def create_video(request: Request, _=Depends(require_auth)):
 
     prompt = str(body.get("prompt") or "").strip()
     model = str(body.get("model") or h3_backend.model_id).strip()
-    seconds = str(body.get("seconds") or body.get("duration") or "4").strip()
+    seconds = _parse_seconds(body.get("seconds") or body.get("duration") or 4)
     size = str(body.get("size") or "1280x720").strip()
     seed = _parse_seed(body.get("seed"))
+    steps = _parse_steps(body.get("steps") or body.get("num_inference_steps"), settings.h3_steps)
 
     if not prompt:
         raise APIError(400, "prompt 不能为空。", param="prompt")
     if model != h3_backend.model_id:
         raise APIError(404, f"视频模型 '{model}' 不存在。", "model_not_found", "model")
-    if seconds not in h3_backend.VALID_SECONDS:
-        raise APIError(400, "seconds 目前支持 4、8、12。", param="seconds")
     if size not in h3_backend.VALID_SIZES:
         raise APIError(400, "不支持该视频尺寸。", param="size")
 
-    seconds_int = int(seconds)
-    frame_count = h3_backend.align_frames(seconds_int)
+    frame_count = h3_backend.align_frames(seconds)
     keyframes = []
     keyframe_indices = []
     used_indices: set[int] = set()
@@ -474,6 +495,7 @@ async def create_video(request: Request, _=Depends(require_auth)):
         "seconds": seconds,
         "size": size,
         "seed": seed,
+        "steps": steps,
         "keyframes": keyframes,
         "keyframe_indices": keyframe_indices,
     }
