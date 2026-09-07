@@ -38,18 +38,21 @@ class Settings:
     h3_crf: int = int(os.getenv("MMAX_H3_CRF", "18"))
     h3_sharpen: float = float(os.getenv("MMAX_H3_SHARPEN", "0.35"))
 
-    qwen_image_enabled: bool = _bool("MMAX_QWEN_IMAGE_ENABLED", True)
-    qwen_image_model_id: str = os.getenv("MMAX_QWEN_IMAGE_MODEL_ID", "qwen-image-2512")
-    qwen_image_dir: Path = _path("MMAX_QWEN_IMAGE_DIR", "/root/autodl-tmp/models/qwen-image-2512")
-    # 官方 Qwen-Image-2512 低显存示例使用 40 steps。
-    qwen_image_steps: int = int(os.getenv("MMAX_QWEN_IMAGE_STEPS", "40"))
-    qwen_image_cfg_scale: float = float(os.getenv("MMAX_QWEN_IMAGE_CFG_SCALE", "4.0"))
-    qwen_image_vram_reserve_gb: float = float(os.getenv("MMAX_QWEN_IMAGE_VRAM_RESERVE_GB", "2"))
-    qwen_image_max_pixels: int = int(os.getenv("MMAX_QWEN_IMAGE_MAX_PIXELS", "4194304"))
-    # VAE 分块可以显著降低编码/解码阶段的显存峰值。
-    qwen_image_vae_tiled: bool = _bool("MMAX_QWEN_IMAGE_VAE_TILED", True)
-    qwen_image_tile_size: int = int(os.getenv("MMAX_QWEN_IMAGE_TILE_SIZE", "128"))
-    qwen_image_tile_stride: int = int(os.getenv("MMAX_QWEN_IMAGE_TILE_STRIDE", "64"))
+    hidream_enabled: bool = _bool("MMAX_HIDREAM_ENABLED", True)
+    hidream_model_id: str = os.getenv("MMAX_HIDREAM_MODEL_ID", "hidream-o1-image")
+    hidream_dir: Path = _path("MMAX_HIDREAM_DIR", "/root/autodl-tmp/models/hidream-o1-image")
+    # DiffSynth HiDream-O1-Image Full 推荐参数。
+    hidream_steps: int = int(os.getenv("MMAX_HIDREAM_STEPS", "50"))
+    hidream_cfg_scale: float = float(os.getenv("MMAX_HIDREAM_CFG_SCALE", "4.0"))
+    hidream_shift: float = float(os.getenv("MMAX_HIDREAM_SHIFT", "3.0"))
+    # 多参考 subject-driven 官方示例使用 shift=1。
+    hidream_subject_shift: float = float(os.getenv("MMAX_HIDREAM_SUBJECT_SHIFT", "1.0"))
+    hidream_noise_scale: float = float(os.getenv("MMAX_HIDREAM_NOISE_SCALE", "8.0"))
+    # 测试阶段尽量利用显存；如与其他进程共享 GPU，可调大该值。
+    hidream_vram_reserve_gb: float = float(os.getenv("MMAX_HIDREAM_VRAM_RESERVE_GB", "0.5"))
+    hidream_max_pixels: int = int(os.getenv("MMAX_HIDREAM_MAX_PIXELS", "4194304"))
+    hidream_max_reference_images: int = int(os.getenv("MMAX_HIDREAM_MAX_REFERENCE_IMAGES", "10"))
+    hidream_release_vram_after_job: bool = _bool("MMAX_HIDREAM_RELEASE_VRAM_AFTER_JOB", True)
 
     max_input_image_bytes: int = int(os.getenv("MMAX_MAX_INPUT_IMAGE_BYTES", str(20 * 1024 * 1024)))
 
