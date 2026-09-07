@@ -29,10 +29,36 @@ mkdir -p "$RUNTIME_DIR"
 PID_FILE="$RUNTIME_DIR/api.pid"
 LOG_FILE="$RUNTIME_DIR/api.log"
 
-if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  echo "服务已经在运行，PID=$(cat "$PID_FILE")"
-  exit 0
+is_mmax_pid() {
+  local pid="$1"
+  local cmdline
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+  [[ "$cmdline" == *"-m mmax_api.run"* || "$cmdline" == *"uvicorn mmax_api.api:app"* ]]
+}
+
+if [[ -f "$PID_FILE" ]]; then
+  PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if is_mmax_pid "$PID"; then
+    echo "服务已经在运行，PID=$PID"
+    exit 0
+  fi
+
+  echo "检测到陈旧 PID 文件（PID=${PID:-未知}），可能来自关机或实例克隆，正在清理。"
+  rm -f "$PID_FILE"
 fi
+
+# 即使 PID 文件丢失，也避免重复启动已有的 mmax-api 进程。
+for proc in /proc/[0-9]*; do
+  pid="${proc##*/}"
+  if is_mmax_pid "$pid"; then
+    echo "$pid" > "$PID_FILE"
+    echo "发现已运行的 mmax-api，已恢复 PID 文件，PID=$pid"
+    exit 0
+  fi
+done
 
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
