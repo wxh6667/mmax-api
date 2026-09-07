@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 
 from .backends.h3 import h3_backend
-from .backends.qwen_image import qwen_image_backend
+from .backends.hidream import hidream_backend
 from .config import settings
 from .jobs import jobs
 from .scheduler import scheduler
@@ -32,7 +32,7 @@ class APIError(Exception):
         self.param = param
 
 
-app = FastAPI(title="mmax-api", version="0.3.0")
+app = FastAPI(title="mmax-api", version="0.4.0")
 
 
 @app.exception_handler(APIError)
@@ -75,15 +75,21 @@ def _model_object(model_id: str, kind: str, ready: bool, reason: str | None) -> 
     if kind == "image":
         capabilities = {
             "text_to_image": True,
-            "image_to_image": False,
-            "max_reference_images": 0,
+            "image_to_image": True,
+            "instruction_edit": True,
+            "multi_reference_subject": True,
+            "max_reference_images": settings.hidream_max_reference_images,
+            "keep_original_aspect": True,
             "mask_edit": False,
             "response_formats": ["url", "b64_json"],
-            "default_steps": settings.qwen_image_steps,
-            "default_cfg_scale": settings.qwen_image_cfg_scale,
+            "default_steps": settings.hidream_steps,
+            "default_cfg_scale": settings.hidream_cfg_scale,
+            "default_shift": settings.hidream_shift,
+            "default_noise_scale": settings.hidream_noise_scale,
         }
         endpoints = {
             "generate": "/v1/images/generations",
+            "edit": "/v1/images/edits",
         }
     else:
         capabilities = {
@@ -119,7 +125,7 @@ def _model_object(model_id: str, kind: str, ready: bool, reason: str | None) -> 
 def _download_image(url: str) -> bytes:
     if not url.startswith(("http://", "https://")):
         raise APIError(400, "图片必须是上传文件、data:image 或 http/https URL。", param="image")
-    req = urllib.request.Request(url, headers={"User-Agent": "mmax-api/0.3"})
+    req = urllib.request.Request(url, headers={"User-Agent": "mmax-api/0.4"})
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             data = response.read(settings.max_input_image_bytes + 1)
@@ -163,6 +169,19 @@ async def _load_image(value, field_name: str):
         raise APIError(400, f"{field_name} 不是有效图片：{exc}", param=field_name) from exc
 
 
+def _collect_image_values(body) -> list:
+    if hasattr(body, "getlist"):
+        values = body.getlist("image")
+        if not values:
+            values = body.getlist("images")
+    else:
+        raw = body.get("image")
+        if raw is None:
+            raw = body.get("images")
+        values = raw if isinstance(raw, list) else [raw]
+    return [value for value in values if value not in (None, "")]
+
+
 def _parse_size(size: str) -> tuple[int, int]:
     try:
         width, height = [int(v) for v in size.lower().split("x", 1)]
@@ -171,10 +190,10 @@ def _parse_size(size: str) -> tuple[int, int]:
     if width <= 0 or height <= 0 or width % 16 or height % 16:
         raise APIError(400, "图片宽高必须为正数并且能被 16 整除。", param="size")
     pixels = width * height
-    if pixels > settings.qwen_image_max_pixels:
+    if pixels > settings.hidream_max_pixels:
         raise APIError(
             400,
-            f"请求尺寸 {width}x{height}，共 {pixels:,} 像素；服务器上限 {settings.qwen_image_max_pixels:,} 像素。",
+            f"请求尺寸 {width}x{height}，共 {pixels:,} 像素；服务器上限 {settings.hidream_max_pixels:,} 像素。",
             param="size",
         )
     return width, height
@@ -213,16 +232,29 @@ def _parse_steps(value, default: int, *, max_steps: int = 80) -> int:
     return steps
 
 
-def _parse_cfg_scale(value) -> float:
+def _parse_float(value, default: float, param: str, minimum: float, maximum: float) -> float:
     if value in (None, ""):
-        return settings.qwen_image_cfg_scale
+        return default
     try:
-        cfg = float(value)
+        result = float(value)
     except Exception as exc:
-        raise APIError(400, "cfg_scale 必须是数字。", param="cfg_scale") from exc
-    if not math.isfinite(cfg) or not 0.0 < cfg <= 20.0:
-        raise APIError(400, "cfg_scale 必须大于 0 且不超过 20。", param="cfg_scale")
-    return cfg
+        raise APIError(400, f"{param} 必须是数字。", param=param) from exc
+    if not math.isfinite(result) or not minimum <= result <= maximum:
+        raise APIError(400, f"{param} 必须在 {minimum:g} 到 {maximum:g} 之间。", param=param)
+    return result
+
+
+def _parse_bool(value, default: bool, param: str) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise APIError(400, f"{param} 必须是布尔值。", param=param)
 
 
 def _parse_seconds(value) -> float:
@@ -281,7 +313,11 @@ async def _run_image_jobs(
     n: int,
     steps: int,
     cfg_scale: float,
+    shift: float,
+    noise_scale: float,
     response_format: str,
+    edit_images: list[Image.Image] | None = None,
+    keep_original_aspect: bool = False,
 ) -> dict:
     submitted = []
     for index in range(n):
@@ -295,9 +331,13 @@ async def _run_image_jobs(
             "seed": current_seed,
             "steps": steps,
             "cfg_scale": cfg_scale,
+            "shift": shift,
+            "noise_scale": noise_scale,
+            "edit_images": edit_images or [],
+            "keep_original_aspect": keep_original_aspect,
         }
         job = jobs.create("image", model, payload)
-        scheduler.submit(job["id"], lambda job_id, p=payload: qwen_image_backend.generate(job_id, p))
+        scheduler.submit(job["id"], lambda job_id, p=payload: hidream_backend.generate(job_id, p))
         submitted.append(job["id"])
 
     completed = [await _wait_for_job(job_id) for job_id in submitted]
@@ -310,13 +350,13 @@ async def _run_image_jobs(
 @app.get("/health")
 def health():
     h3_ok, h3_reason = h3_backend.ready()
-    qwen_ok, qwen_reason = qwen_image_backend.ready()
+    hidream_ok, hidream_reason = hidream_backend.ready()
     return {
         "status": "ok",
         "queue_pending": scheduler.pending,
         "models": {
             h3_backend.model_id: {"ready": h3_ok, "reason": h3_reason},
-            qwen_image_backend.model_id: {"ready": qwen_ok, "reason": qwen_reason},
+            hidream_backend.model_id: {"ready": hidream_ok, "reason": hidream_reason},
         },
     }
 
@@ -324,19 +364,19 @@ def health():
 @app.get("/v1/models")
 def list_models(_=Depends(require_auth)):
     h3_ok, h3_reason = h3_backend.ready()
-    qwen_ok, qwen_reason = qwen_image_backend.ready()
+    hidream_ok, hidream_reason = hidream_backend.ready()
     return {
         "object": "list",
         "data": [
             _model_object(h3_backend.model_id, "video", h3_ok, h3_reason),
-            _model_object(qwen_image_backend.model_id, "image", qwen_ok, qwen_reason),
+            _model_object(hidream_backend.model_id, "image", hidream_ok, hidream_reason),
         ],
     }
 
 
 @app.get("/v1/models/{model_id}")
 def retrieve_model(model_id: str, _=Depends(require_auth)):
-    for backend in (h3_backend, qwen_image_backend):
+    for backend in (h3_backend, hidream_backend):
         if backend.model_id == model_id:
             ok, reason = backend.ready()
             return _model_object(backend.model_id, backend.kind, ok, reason)
@@ -349,18 +389,26 @@ async def create_image_generation(request: Request, _=Depends(require_auth)):
     body = await request.json() if "application/json" in content_type else await request.form()
 
     prompt = str(body.get("prompt") or "").strip()
-    negative_prompt = str(body.get("negative_prompt") or "").strip()
-    model = str(body.get("model") or qwen_image_backend.model_id).strip()
+    negative_prompt = str(body.get("negative_prompt") or " ").strip() or " "
+    model = str(body.get("model") or hidream_backend.model_id).strip()
     size = str(body.get("size") or "1024x1024").strip()
     seed = _parse_seed(body.get("seed"))
     n = _parse_n(body.get("n"))
-    steps = _parse_steps(body.get("steps") or body.get("num_inference_steps"), settings.qwen_image_steps)
-    cfg_scale = _parse_cfg_scale(body.get("cfg_scale") or body.get("guidance_scale"))
+    steps = _parse_steps(body.get("steps") or body.get("num_inference_steps"), settings.hidream_steps)
+    cfg_scale = _parse_float(
+        body.get("cfg_scale") or body.get("guidance_scale"),
+        settings.hidream_cfg_scale,
+        "cfg_scale",
+        0.0,
+        20.0,
+    )
+    shift = _parse_float(body.get("shift"), settings.hidream_shift, "shift", 0.1, 20.0)
+    noise_scale = _parse_float(body.get("noise_scale"), settings.hidream_noise_scale, "noise_scale", 0.0, 32.0)
     response_format = _parse_response_format(body.get("response_format"))
 
     if not prompt:
         raise APIError(400, "prompt 不能为空。", param="prompt")
-    if model != qwen_image_backend.model_id:
+    if model != hidream_backend.model_id:
         raise APIError(404, f"图片模型 '{model}' 不存在。", "model_not_found", "model")
     width, height = _parse_size(size)
 
@@ -374,6 +422,8 @@ async def create_image_generation(request: Request, _=Depends(require_auth)):
         n=n,
         steps=steps,
         cfg_scale=cfg_scale,
+        shift=shift,
+        noise_scale=noise_scale,
         response_format=response_format,
     )
 
@@ -382,14 +432,79 @@ async def create_image_generation(request: Request, _=Depends(require_auth)):
 async def create_image_edit(request: Request, _=Depends(require_auth)):
     content_type = request.headers.get("content-type", "")
     body = await request.json() if "application/json" in content_type else await request.form()
-    model = str(body.get("model") or qwen_image_backend.model_id).strip()
-    if model != qwen_image_backend.model_id:
+
+    prompt = str(body.get("prompt") or "").strip()
+    negative_prompt = str(body.get("negative_prompt") or " ").strip() or " "
+    model = str(body.get("model") or hidream_backend.model_id).strip()
+    size = str(body.get("size") or "1024x1024").strip()
+    seed = _parse_seed(body.get("seed"))
+    n = _parse_n(body.get("n"))
+    steps = _parse_steps(body.get("steps") or body.get("num_inference_steps"), settings.hidream_steps)
+    cfg_scale = _parse_float(
+        body.get("cfg_scale") or body.get("guidance_scale"),
+        settings.hidream_cfg_scale,
+        "cfg_scale",
+        0.0,
+        20.0,
+    )
+    response_format = _parse_response_format(body.get("response_format"))
+
+    if not prompt:
+        raise APIError(400, "prompt 不能为空。", param="prompt")
+    if model != hidream_backend.model_id:
         raise APIError(404, f"图片模型 '{model}' 不存在。", "model_not_found", "model")
-    raise APIError(
-        400,
-        "qwen-image-2512 是文生图模型，不支持图片编辑；图片编辑需要单独部署 Qwen-Image-Edit 系列模型。",
-        "unsupported_capability",
-        "model",
+    if body.get("mask") not in (None, ""):
+        raise APIError(400, "HiDream 当前接口不支持 mask 局部编辑。", "unsupported_capability", "mask")
+
+    image_values = _collect_image_values(body)
+    if not image_values:
+        raise APIError(400, "至少需要提供 1 张参考图。", param="image")
+    if len(image_values) > settings.hidream_max_reference_images:
+        raise APIError(
+            400,
+            f"参考图最多支持 {settings.hidream_max_reference_images} 张。",
+            "unsupported_capability",
+            "image",
+        )
+
+    edit_images = [
+        await _load_image(value, f"image[{index}]")
+        for index, value in enumerate(image_values)
+    ]
+
+    keep_original_aspect = _parse_bool(
+        body.get("keep_original_aspect"),
+        len(edit_images) == 1,
+        "keep_original_aspect",
+    )
+    if keep_original_aspect and len(edit_images) != 1:
+        raise APIError(
+            400,
+            "keep_original_aspect 仅适用于恰好 1 张参考图。",
+            "unsupported_capability",
+            "keep_original_aspect",
+        )
+
+    default_shift = settings.hidream_subject_shift if len(edit_images) >= 2 else settings.hidream_shift
+    shift = _parse_float(body.get("shift"), default_shift, "shift", 0.1, 20.0)
+    noise_scale = _parse_float(body.get("noise_scale"), settings.hidream_noise_scale, "noise_scale", 0.0, 32.0)
+    width, height = _parse_size(size)
+
+    return await _run_image_jobs(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        model=model,
+        width=width,
+        height=height,
+        seed=seed,
+        n=n,
+        steps=steps,
+        cfg_scale=cfg_scale,
+        shift=shift,
+        noise_scale=noise_scale,
+        response_format=response_format,
+        edit_images=edit_images,
+        keep_original_aspect=keep_original_aspect,
     )
 
 
