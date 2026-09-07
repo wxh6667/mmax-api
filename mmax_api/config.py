@@ -32,28 +32,24 @@ class Settings:
     h3_video_vae: Path = _path("MMAX_H3_VIDEO_VAE", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/video_vae_nf4.safetensors")
     h3_audio_vae: Path = _path("MMAX_H3_AUDIO_VAE", "/root/autodl-tmp/models/h3/DiffSynth-Studio/MiniMax-H3-NF4/audio_vae_nf4.safetensors")
     h3_processor: Path = _path("MMAX_H3_PROCESSOR", "/root/autodl-tmp/models/h3/MiniMaxAI/MiniMax-H3/FL2VA/processor")
-    # 官方同款 NF4 Pruned FL2VA 示例使用 50 steps。这里默认取 20，
-    # 在 4090D 上兼顾清晰度和速度；单次请求还可以通过 steps 覆盖。
+    # 官方同款 NF4 Pruned FL2VA 示例使用 50 steps。默认 20 兼顾速度和质量。
     h3_steps: int = int(os.getenv("MMAX_H3_STEPS", "20"))
     h3_vram_reserve_gb: float = float(os.getenv("MMAX_H3_VRAM_RESERVE_GB", "4"))
     h3_crf: int = int(os.getenv("MMAX_H3_CRF", "18"))
     h3_sharpen: float = float(os.getenv("MMAX_H3_SHARPEN", "0.35"))
 
-    krea_enabled: bool = _bool("MMAX_KREA_ENABLED", True)
-    krea_model_id: str = os.getenv("MMAX_KREA_MODEL_ID", "krea-2-turbo")
-    krea_dit: Path = _path("MMAX_KREA_DIT", "/root/autodl-tmp/models/krea2/krea2_turbo_bf16.safetensors")
-    krea_text_encoder: Path = _path("MMAX_KREA_TEXT_ENCODER", "/root/autodl-tmp/models/krea2/qwen3vl_4b_bf16.safetensors")
-    krea_vae: Path = _path("MMAX_KREA_VAE", "/root/autodl-tmp/models/krea2/qwen_image/vae/diffusion_pytorch_model.safetensors")
-    krea_tokenizer: Path = _path("MMAX_KREA_TOKENIZER", "/root/autodl-tmp/models/krea2/qwen3vl_tokenizer")
-    krea_vram_reserve_gb: float = float(os.getenv("MMAX_KREA_VRAM_RESERVE_GB", "2"))
-
-    # 对外允许的最大图片像素。原生渲染会单独受 krea_render_max_pixels 约束，
-    # 因此较大的输出可以通过高质量缩放得到，不会无条件把超大分辨率塞进 GPU。
-    krea_max_pixels: int = int(os.getenv("MMAX_KREA_MAX_PIXELS", "8388608"))
-    # Turbo 官方在 2048x2048 下细节最好；4090D 默认先取 1536 最小边平衡质量和稳定性。
-    krea_render_min_edge: int = int(os.getenv("MMAX_KREA_RENDER_MIN_EDGE", "1536"))
-    krea_render_max_pixels: int = int(os.getenv("MMAX_KREA_RENDER_MAX_PIXELS", "4194304"))
-    krea_sharpen_percent: int = int(os.getenv("MMAX_KREA_SHARPEN_PERCENT", "55"))
+    qwen_image_enabled: bool = _bool("MMAX_QWEN_IMAGE_ENABLED", True)
+    qwen_image_model_id: str = os.getenv("MMAX_QWEN_IMAGE_MODEL_ID", "qwen-image-2512")
+    qwen_image_dir: Path = _path("MMAX_QWEN_IMAGE_DIR", "/root/autodl-tmp/models/qwen-image-2512")
+    # 官方 Qwen-Image-2512 低显存示例使用 40 steps。
+    qwen_image_steps: int = int(os.getenv("MMAX_QWEN_IMAGE_STEPS", "40"))
+    qwen_image_cfg_scale: float = float(os.getenv("MMAX_QWEN_IMAGE_CFG_SCALE", "4.0"))
+    qwen_image_vram_reserve_gb: float = float(os.getenv("MMAX_QWEN_IMAGE_VRAM_RESERVE_GB", "2"))
+    qwen_image_max_pixels: int = int(os.getenv("MMAX_QWEN_IMAGE_MAX_PIXELS", "4194304"))
+    # VAE 分块可以显著降低编码/解码阶段的显存峰值。
+    qwen_image_vae_tiled: bool = _bool("MMAX_QWEN_IMAGE_VAE_TILED", True)
+    qwen_image_tile_size: int = int(os.getenv("MMAX_QWEN_IMAGE_TILE_SIZE", "128"))
+    qwen_image_tile_stride: int = int(os.getenv("MMAX_QWEN_IMAGE_TILE_STRIDE", "64"))
 
     max_input_image_bytes: int = int(os.getenv("MMAX_MAX_INPUT_IMAGE_BYTES", str(20 * 1024 * 1024)))
 
