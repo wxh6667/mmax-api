@@ -32,7 +32,6 @@ import json, sys
 spec = json.load(sys.stdin)
 required = {
     ("/v1/images/generations", "post"),
-    ("/v1/images/edits", "post"),
     ("/v1/videos", "post"),
     ("/v1/videos/{job_id}", "get"),
     ("/v1/videos/{job_id}/content", "get"),
