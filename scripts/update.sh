@@ -22,7 +22,7 @@ echo "===== 拉取最新代码 ====="
 git pull --ff-only
 
 echo "===== Python 语法检查 ====="
-"$PYTHON_BIN" -m compileall -q mmax_api scripts/prepare_krea.py
+"$PYTHON_BIN" -m compileall -q mmax_api
 
 echo "===== 重启服务 ====="
 bash "$ROOT/scripts/restart.sh"
