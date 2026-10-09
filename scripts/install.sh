@@ -58,11 +58,19 @@ if [[ ! -d "$DIFFSYNTH_PATH/.git" ]]; then
   echo "正在获取 DiffSynth-Studio。"
   mkdir -p "$(dirname "$DIFFSYNTH_PATH")"
   accel_on || true
-  git clone https://github.com/modelscope/DiffSynth-Studio.git "$DIFFSYNTH_PATH"
+  # 浅克隆减小传输量；加速通道不稳（官方不承诺稳定）失败时回退 PyPI 包。
+  if ! git clone --depth 1 https://github.com/modelscope/DiffSynth-Studio.git "$DIFFSYNTH_PATH"; then
+    rm -rf "$DIFFSYNTH_PATH"
+    echo "GitHub 克隆失败，将改用 PyPI 安装 diffsynth。"
+  fi
   accel_off
 fi
 
-"$PYTHON_BIN" -m pip install -e "$DIFFSYNTH_PATH"
+if [[ -d "$DIFFSYNTH_PATH/diffsynth" ]]; then
+  "$PYTHON_BIN" -m pip install -e "$DIFFSYNTH_PATH"
+else
+  "$PYTHON_BIN" -m pip install diffsynth
+fi
 "$PYTHON_BIN" -m pip install -e "$ROOT"
 
 # 魔搭（modelscope）是模型权重的下载通道，已装则复用。
