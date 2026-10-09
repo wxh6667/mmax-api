@@ -70,6 +70,15 @@ fi
 
 mkdir -p runtime /root/autodl-tmp/outputs/videos /root/autodl-tmp/outputs/images /root/autodl-tmp/models
 
+# 初次部署自动生成 API Key（已存在则保留）；服务端无 Key 时所有请求会 500。
+KEY_FILE="${MMAX_API_KEY_FILE:-/root/autodl-tmp/mmax/.api_key}"
+if [[ ! -s "$KEY_FILE" ]]; then
+  mkdir -p "$(dirname "$KEY_FILE")"
+  openssl rand -hex 24 > "$KEY_FILE"
+  chmod 600 "$KEY_FILE"
+  echo "已生成 API Key：$(cat "$KEY_FILE")"
+fi
+
 # 模型权重走魔搭国内 CDN 幂等下载（不需要代理，务必在 accel_off 之后执行）；
 # 文件齐全时自动跳过，MMAX_SKIP_MODEL_DOWNLOAD=1 可整体跳过。
 if [[ "${MMAX_SKIP_MODEL_DOWNLOAD:-0}" == "1" ]]; then
