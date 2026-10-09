@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/10-09-h3-newapi-optimize/research/new-api-consumer-contract.md", "reason": "验收时核对服务端行为与消费方契约一致（404消除/计费字段/进度）"}
+{"file": ".trellis/tasks/10-09-h3-newapi-optimize/research/openai-video-protocol.md", "reason": "验收时核对外协议字段与 OpenAI Video 规范一致"}

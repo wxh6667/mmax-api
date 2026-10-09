@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/10-09-h3-newapi-optimize/research/new-api-consumer-contract.md", "reason": "New API 消费方行为契约：轮询404判死/计费结算字段/进度与content转发要求，是服务端改造的依据"}
+{"file": ".trellis/tasks/10-09-h3-newapi-optimize/research/openai-video-protocol.md", "reason": "OpenAI Video 对象字段规范，_public_job 补字段的协议对齐目标"}
