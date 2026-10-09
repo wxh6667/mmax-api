@@ -47,5 +47,3 @@ mkdir -p runtime /root/autodl-tmp/outputs/videos /root/autodl-tmp/outputs/images
 echo "安装完成。"
 echo "Python：$PYTHON_BIN"
 echo "DiffSynth：$DIFFSYNTH_PATH"
-echo "如需准备 Krea 2，请执行："
-echo "$PYTHON_BIN scripts/prepare_krea.py"

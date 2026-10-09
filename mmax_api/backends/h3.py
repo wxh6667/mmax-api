@@ -11,6 +11,22 @@ from ..config import settings
 from ..jobs import jobs
 
 
+def _denoise_progress_bar(job_id: str):
+    """构造传给 DiffSynth progress_bar_cmd 的进度条。
+
+    DiffSynth 去噪循环用 progress_bar_cmd(timesteps) 包装迭代器（默认 tqdm）。
+    这里换成生成器，把去噪步数线性映射到任务进度 5~90，客户端在漫长的
+    生成期间能看到真实推进，而不是长期停留在 5%。
+    """
+    def bar(timesteps):
+        total = max(1, len(timesteps))
+        for index, timestep in enumerate(timesteps):
+            yield timestep
+            jobs.update(job_id, progress=min(90, 5 + 85 * (index + 1) // total))
+
+    return bar
+
+
 class H3Backend(Backend):
     """MiniMax H3 视频/音频后端。"""
 
@@ -137,8 +153,9 @@ class H3Backend(Backend):
             seed=seed,
             keyframes=keyframes,
             keyframe_indices=keyframe_indices,
+            progress_bar_cmd=_denoise_progress_bar(job_id),
         )
-        jobs.update(job_id, progress=85)
+        # 去噪循环结束时进度已达 90（解码阶段），此处不再回退更新。
 
         write_video_audio(
             video=video,

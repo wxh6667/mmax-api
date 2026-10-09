@@ -17,7 +17,7 @@ jobs:
           python-version: "3.12"
 
       - name: 检查 Python 语法
-        run: python -m compileall -q mmax_api scripts/prepare_krea.py
+        run: python -m compileall -q mmax_api
 
       - name: 检查 Shell 语法
         run: |

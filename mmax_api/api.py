@@ -63,6 +63,13 @@ def require_auth(authorization: Optional[str] = Header(default=None)) -> None:
 
 def _public_job(job: dict) -> dict:
     data = {k: v for k, v in job.items() if k not in {"payload", "output_path"}}
+    # OpenAI Video 对象会回显 prompt/seconds/size；New API 也在任务完成时
+    # 按响应中的实测 seconds/size 结算计费，因此这三个字段必须对外可见。
+    payload = job.get("payload") or {}
+    data["prompt"] = payload.get("prompt")
+    data["size"] = payload.get("size")
+    if job["object"] == "video":
+        data["seconds"] = payload.get("seconds")
     if job["status"] == "completed":
         plural = "videos" if job["object"] == "video" else "images"
         data["content_url"] = f"/v1/{plural}/{job['id']}/content"
