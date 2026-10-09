@@ -18,8 +18,26 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+# 仓库托管在 GitHub，AutoDL 环境用学术资源加速拉取；
+# 加速仅覆盖 GitHub/HuggingFace，pull 完立即关闭，避免影响其它网络访问。
+accel_on() {
+  if [[ -f /etc/network_turbo ]]; then
+    # shellcheck disable=SC1091
+    source /etc/network_turbo
+    echo "已启用 AutoDL 学术资源加速（GitHub）。"
+    return 0
+  fi
+  return 1
+}
+
+accel_off() {
+  unset http_proxy https_proxy
+}
+
 echo "===== 拉取最新代码 ====="
+accel_on || true
 git pull --ff-only
+accel_off
 
 echo "===== Python 语法检查 ====="
 "$PYTHON_BIN" -m compileall -q mmax_api
