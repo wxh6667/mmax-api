@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/10-10-install-model-download/research/dependency-stack.md", "reason": "验收依据：核对两条安装路径均带 [audio] extra、transformers 版本满足约束、安装末尾冒烟校验能在缺依赖时以非零码退出。"}
+{"file": ".trellis/spec/backend/deployment-guidelines.md", "reason": "核对部署脚本契约仍成立：不静默兜底、失败显式暴露、数据盘守卫与 allow_patterns 行为未被本任务回归。"}

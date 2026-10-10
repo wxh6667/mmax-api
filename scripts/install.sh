@@ -58,6 +58,40 @@ else
   exit 1
 fi
 
+# ── 依赖安装策略（详见 .trellis/tasks/10-10-install-deps-fix/design.md）────────────
+# H3 后端在 import 阶段即触发 av / torchaudio，二者属 diffsynth 的 [audio] extra（默认不装）；
+# 裸装 diffsynth 会让服务能起、但第一条 H3 请求抛 ModuleNotFoundError。
+DIFFSYNTH_EXTRAS="${MMAX_DIFFSYNTH_EXTRAS:-audio}"
+# diffsynth 对 transformers 无上界，而其 transformers-5 兼容尚未收口（官方 nexusgen extra 自钉 4.49.0）。
+DIFFSYNTH_CONSTRAINTS="${MMAX_DIFFSYNTH_CONSTRAINTS:-transformers<5}"
+# 复用镜像自带 torch（venv --system-site-packages）：省 ≈3.6GB 下载，且 torch/CUDA 与镜像驱动天然匹配。
+VENV_SYSTEM_SITE="${MMAX_VENV_SYSTEM_SITE:-1}"
+# 安装期保留 pip 缓存（慢链路重试不必从零重下），成功后统一 purge。
+PIP_CACHE_FLAG=""
+if [[ "${MMAX_PIP_NO_CACHE:-0}" == "1" ]]; then
+  PIP_CACHE_FLAG="--no-cache-dir"
+fi
+
+# torchvision 与 [audio] 里的 torchaudio 同样无上界：若不钉住 torch，pip 解析最新 torchvision
+# 时会连带把 torch 升到当前最新，复用镜像 torch 的意义被抵消，又要多下 ≈3.6GB。
+# 用户已在 MMAX_DIFFSYNTH_CONSTRAINTS 里钉了 torch 时，不再追加第二个 torch 规格（否则 pip 直接冲突）。
+# 正则放在变量里：`[=<>!~]` 直接写进 [[ =~ ]] 会被 bash 当成重定向/比较运算符而使脚本语法错误。
+TORCH_PIN_RE='(^|[[:space:]])torch[[:space:]]*[=<>!~]'
+
+if [[ "$VENV_SYSTEM_SITE" != "1" ]]; then
+  echo "[deps] MMAX_VENV_SYSTEM_SITE=$VENV_SYSTEM_SITE: isolated venv; pip resolves and downloads torch itself (~3.6GB, slow)." >&2
+else
+  base_torch="$(python3 -c 'import torch;print(torch.__version__.split("+")[0])' 2>/dev/null || true)"
+  if [[ -z "$base_torch" ]]; then
+    echo "[deps] WARNING: no torch in base environment; pip will download the full torch (~3.6GB, slow)." >&2
+  elif [[ "$DIFFSYNTH_CONSTRAINTS" =~ $TORCH_PIN_RE ]]; then
+    echo "[deps] MMAX_DIFFSYNTH_CONSTRAINTS already pins torch; not adding torch==$base_torch."
+  else
+    DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torch==$base_torch"
+    echo "[deps] Reusing image torch $base_torch (venv --system-site-packages)."
+  fi
+fi
+
 # AutoDL 学术资源加速仅代理 GitHub / HuggingFace 四个域名，
 # PyPI 与魔搭（ModelScope）国内直连更快，因此用完立即关闭，避免拖慢后续下载。
 accel_on() {
@@ -78,14 +112,34 @@ accel_off() {
 VENV_FRESH=0
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "[venv] Creating .venv ..."
-  python3 -m venv "$ROOT/.venv"
+  if [[ "$VENV_SYSTEM_SITE" == "1" ]]; then
+    python3 -m venv --system-site-packages "$ROOT/.venv"
+  else
+    python3 -m venv "$ROOT/.venv"
+  fi
   PYTHON_BIN="$ROOT/.venv/bin/python"
   VENV_FRESH=1
+else
+  # system-site-packages 只在 venv 创建时确定，已存在的 venv 无法就地更改。
+  want="false"
+  if [[ "$VENV_SYSTEM_SITE" == "1" ]]; then
+    want="true"
+  fi
+  have=""
+  if [[ -f "$ROOT/.venv/pyvenv.cfg" ]]; then
+    have="$(sed -n 's/^include-system-site-packages *= *//p' "$ROOT/.venv/pyvenv.cfg" | tail -n 1)"
+  fi
+  if [[ -n "$have" && "$have" != "$want" ]]; then
+    echo "[venv] WARNING: existing .venv has include-system-site-packages=$have, expected $want." >&2
+    echo "[venv] WARNING: this attribute cannot be changed in place; to reuse the image torch," >&2
+    echo "[venv] WARNING: delete $ROOT/.venv and re-run this script (or set MMAX_VENV_SYSTEM_SITE=$have)." >&2
+  fi
 fi
 
 # 工具链升级只在新装 venv 时执行，重复运行 install.sh 不再重复升级。
 if [[ "$VENV_FRESH" -eq 1 ]]; then
-  "$PYTHON_BIN" -m pip install --no-cache-dir -U pip setuptools wheel
+  # shellcheck disable=SC2086
+  "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG -U pip setuptools wheel
 fi
 
 if [[ ! -d "$DIFFSYNTH_PATH/.git" ]]; then
@@ -100,17 +154,50 @@ if [[ ! -d "$DIFFSYNTH_PATH/.git" ]]; then
   accel_off
 fi
 
-# 大依赖（torch + CUDA wheels ≈3.6GB）禁用 pip 缓存：既不在系统盘留 wheel 残渣，
-# 中途失败也不会残留半包；依赖最终解包进 $PYTHON_BIN 的 venv。
+# 大依赖（torch + CUDA wheels）安装期保留 pip 缓存：这条链路可能很慢，中途失败时已下好的
+# wheel 可复用，不必从零重下；成功后再统一 purge（见脚本末尾），仍不留残渣。
+# 必须带 [audio] extra：H3 后端顶层 import av / torchaudio，缺之则第一条 H3 请求即失败。
 if [[ -d "$DIFFSYNTH_PATH/diffsynth" ]]; then
-  "$PYTHON_BIN" -m pip install --no-cache-dir -e "$DIFFSYNTH_PATH"
+  # shellcheck disable=SC2086
+  "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG -e "${DIFFSYNTH_PATH}[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
 else
-  "$PYTHON_BIN" -m pip install --no-cache-dir diffsynth
+  # shellcheck disable=SC2086
+  "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG "diffsynth[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
 fi
-"$PYTHON_BIN" -m pip install --no-cache-dir -e "$ROOT"
+# shellcheck disable=SC2086
+"$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG -e "$ROOT"
 
 # 魔搭（modelscope）是模型权重的下载通道，已装则复用。
-"$PYTHON_BIN" -c "import modelscope" 2>/dev/null || "$PYTHON_BIN" -m pip install --no-cache-dir modelscope
+# shellcheck disable=SC2086
+"$PYTHON_BIN" -c "import modelscope" 2>/dev/null || "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG modelscope
+
+# 依赖冒烟校验：H3 依赖在 import 阶段即被触发，缺失必须在这里暴露，而不是等运行时第一条请求
+# 才报 ModuleNotFoundError。刻意放在模型下载（≈28GB）之前——慢链路上先失败远比下完再失败划算。
+# 无卡模式下 cuda=False 属预期，不作为失败条件；打印版本便于发现 --system-site-packages 的旧版本遮蔽。
+if ! "$PYTHON_BIN" - <<'PY'
+import importlib
+
+for mod in ("torch", "torchvision", "torchaudio", "av", "transformers", "fastapi", "uvicorn"):
+    importlib.import_module(mod)
+from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline  # noqa: F401
+
+import fastapi
+import torch
+import torchvision
+import transformers
+import uvicorn
+
+print(
+    f"[verify] torch={torch.__version__} torchvision={torchvision.__version__} "
+    f"cuda={torch.cuda.is_available()} transformers={transformers.__version__} "
+    f"fastapi={fastapi.__version__} uvicorn={uvicorn.__version__}"
+)
+PY
+then
+  echo "[verify] ERROR: dependencies incomplete (torch/torchvision/torchaudio/av/transformers/fastapi/uvicorn or the H3 pipeline failed to import)." >&2
+  echo "[verify] Check the pip output above; if av/torchaudio are missing, confirm the diffsynth [${DIFFSYNTH_EXTRAS}] extra was installed." >&2
+  exit 1
+fi
 
 mkdir -p runtime "$DATA_DIR/outputs/videos" "$DATA_DIR/outputs/images" "$DATA_DIR/models"
 
@@ -174,9 +261,9 @@ if ! ls "${MMAX_HIDREAM_DIR:-/root/autodl-tmp/models/hidream-o1-image}"/model-*.
   echo "[models] Note: HiDream image model not found (${MMAX_HIDREAM_DIR:-/root/autodl-tmp/models/hidream-o1-image}/model-*.safetensors); image API stays not-ready until you place it."
 fi
 
-# 兜底清理 pip wheel 缓存（默认在 /root/.cache/pip，属系统盘）：本脚本已用 --no-cache-dir，
-# 这里再清一次，释放旧版本 install.sh 或基础镜像遗留的缓存（幂等，无缓存时删除 0 个文件）。
-# 清理属尽力而为，不因此中断已完成的安装；但失败必须显式暴露，不能谎报成功。
+# 兜底清理 pip wheel 缓存（默认在 /root/.cache/pip，属系统盘）：刻意放在最后一步，且只在冒烟校验
+# 通过后才执行——校验失败时保留缓存，重试不必从零重下。释放本次下载的 wheel 与旧版 install.sh /
+# 基础镜像遗留的缓存（幂等，无缓存时删除 0 个文件）。清理属尽力而为，不中断已完成的安装；失败显式暴露。
 if "$PYTHON_BIN" -m pip cache purge >/dev/null 2>&1; then
   echo "[pip] Wheel cache purged."
 else

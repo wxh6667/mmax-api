@@ -95,3 +95,97 @@ if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" 
 - 无卡模式（面板 `GPU: No devices were found`，常见 0.5 核 / 2GB）可 clone 代码、装环境、下模型，
   但**跑不了 H3 / HiDream 推理**；且 0.5 核 2GB 下 `pip install` torch+CUDA（≈3.6GB wheel）会很慢甚至 OOM。
 - 结论：**安装与推理都在 GPU 模式下进行**。
+
+---
+
+## Scenario: 依赖安装（diffsynth extra / 版本约束 / 冒烟校验）
+
+### 1. Scope / Trigger
+
+- 触发：修改 `scripts/install.sh` 的依赖安装段，或调整 diffsynth / torch / transformers 的安装方式。
+- 适用：任何可能导致"服务能起、但模型后端跑不了"的依赖改动。
+
+### 2. Signatures
+
+- 命令：`bash scripts/install.sh`
+- 环境键（定义见 `.env.example`）：
+
+| 键 | 默认 | 含义 |
+|---|---|---|
+| `MMAX_VENV_SYSTEM_SITE` | `1` | venv 用 `--system-site-packages` 复用镜像 torch；`0` 用隔离 venv（会重下 torch ≈3.6GB） |
+| `MMAX_DIFFSYNTH_EXTRAS` | `audio` | 安装 diffsynth 时附加的 extras |
+| `MMAX_DIFFSYNTH_CONSTRAINTS` | `transformers<5` | 追加版本约束；**值必须加引号**（见 Gotcha） |
+| `MMAX_PIP_NO_CACHE` | 未设 | 设 `1` 恢复 `--no-cache-dir` |
+
+### 3. Contracts
+
+- **必须带 `[audio]` extra**：`mmax_api/backends/h3.py` 在 import 阶段即触发
+  `diffsynth.utils.data.audio`（顶层 `import torchaudio`）与 `diffsynth.utils.data.audio_video`（顶层 `import av`），
+  二者属 diffsynth 的 `[audio]` extra、**默认不装**。两条安装路径（本地 clone 的 `-e`、PyPI 回退）都必须带上。
+- **必须约束版本**：diffsynth 对 `torch`/`transformers`/`torchvision` 几无上界。复用镜像 torch 时自动追加
+  `torch==<探测到的镜像版本>`，防止 pip 解析最新 torchvision 时连带升级 torch；用户已自钉 torch 则跳过并提示。
+- **冒烟校验放在模型下载之前**：依赖装完即 import
+  `torch/torchvision/torchaudio/av/transformers/fastapi/uvicorn` 与 `MiniMaxH3Pipeline`，失败 `exit 1`。
+  放在 ≈28GB 模型下载之前，避免下完才发现依赖坏。
+- **pip 缓存：安装期保留、最后 purge**：慢链路上保留缓存使失败重试只需补差量；`pip cache purge` 放最后一步，
+  只在冒烟校验通过后执行。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 行为 |
+|---|---|
+| `MMAX_VENV_SYSTEM_SITE=0` | stderr 告警"将自行下载完整 torch" |
+| 复用镜像 torch 且用户未钉 torch | 自动加 `torch==<镜像版本>` |
+| 用户已在 `MMAX_DIFFSYNTH_CONSTRAINTS` 钉了 torch | 不追加，打印提示（避免两个冲突的 torch 规格） |
+| 已有 `.venv` 且 system-site 属性不符 | 打印 `WARNING` + 提示重建，**不擅自删除** venv |
+| 冒烟校验任一 import 失败 | stderr 明确错误 + `exit 1`；不打印 `INSTALL DONE`、不执行 purge |
+| `pip cache purge` 失败 | `WARNING`，不中断 |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**：复用镜像 torch → 带 `[audio]` + 约束 → 冒烟通过 → 下模型 → 最后 purge → `INSTALL DONE`。
+- **Base**：重复运行；依赖齐备，pip 无事可做；校验通过。
+- **Bad**：裸装 `diffsynth`（无 `[audio]`）→ 服务能起、`/health` 正常，但第一条 H3 请求
+  `ModuleNotFoundError: No module named 'torchaudio'`。
+
+### 6. Tests Required
+
+- `bash -n scripts/install.sh` 与 `shellcheck scripts/install.sh` 必须通过。
+- `grep -c -- "--no-cache-dir" scripts/install.sh` 必须为 `1`（只在 `PIP_CACHE_FLAG` 定义处）。
+- 断言 `[audio]` 同时出现在 clone 路径与 PyPI 回退路径。
+- 断言 冒烟校验行号 < 模型下载行号 < `pip cache purge` 行号。
+- 冒烟校验失败时脚本必须非零退出、不打印 `INSTALL DONE`、不执行 purge。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```bash
+# 裸装：H3 顶层 import torchaudio / av 直接失败
+"$PYTHON_BIN" -m pip install -e "$DIFFSYNTH_PATH"
+"$PYTHON_BIN" -m pip install diffsynth
+```
+
+#### Correct
+
+```bash
+"$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG -e "${DIFFSYNTH_PATH}[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
+"$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG "diffsynth[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
+```
+
+---
+
+## Common Mistakes / Gotchas（依赖安装）
+
+### Gotcha: `.env` 会被 `source`，值里的 `<` `>` 必须加引号
+
+- **现象**：`.env` 写 `MMAX_DIFFSYNTH_CONSTRAINTS=transformers<5`，`install.sh` source 后变量变成 `transformers`，
+  `<5` 被当成输入重定向；上界被静默丢掉，`set -e` 下还可能直接中止。
+- **原因**：`install.sh` 用 `set -a; source .env` 加载配置，未加引号的值会被 bash 当作 shell 语法解析。
+- **正确**：`MMAX_DIFFSYNTH_CONSTRAINTS='transformers<5'`（凡含 shell 元字符的值一律加引号）。
+
+### Gotcha: `[[ =~ ]]` 里的正则不能含裸 `<` `>`
+
+- **现象**：`[[ "$s" =~ [=<>!~] ]]` 使整个脚本 `bash -n` 报 `syntax error near ...`。
+- **原因**：`[[ ]]` 内 `<`/`>` 是重定向/比较运算符，bash 解析器不理解正则字符类。
+- **正确**：把正则放进变量再引用：`RE='[=<>!~]'; [[ "$s" =~ $RE ]]`。

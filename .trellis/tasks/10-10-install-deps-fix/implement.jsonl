@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/10-10-install-model-download/research/dependency-stack.md", "reason": "核心证据：H3 顶层 import torchaudio/av 的调用链（h3.py:86/116 → utils/data/audio.py:2、audio_video.py:1）、diffsynth pyproject 的 [audio] extra 定义与无版本上界、transformers-5 兼容未收口的 PR 证据、以及复用镜像 torch / pip 缓存策略的理由。D1/D2/D3/D4 取值的依据。"}
+{"file": ".trellis/spec/backend/deployment-guidelines.md", "reason": "部署脚本契约：数据盘守卫、allow_patterns、清理类操作不得谎报成功。本任务新增的冒烟校验与 pip 缓存策略需与该契约的'失败显式暴露'保持一致。"}
