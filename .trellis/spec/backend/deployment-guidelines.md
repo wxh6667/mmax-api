@@ -189,3 +189,103 @@ if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" 
 - **现象**：`[[ "$s" =~ [=<>!~] ]]` 使整个脚本 `bash -n` 报 `syntax error near ...`。
 - **原因**：`[[ ]]` 内 `<`/`>` 是重定向/比较运算符，bash 解析器不理解正则字符类。
 - **正确**：把正则放进变量再引用：`RE='[=<>!~]'; [[ "$s" =~ $RE ]]`。
+
+---
+
+## Scenario: 在 AutoDL 容器上拉取代码（GitHub 直连与学术加速均不可用）
+
+### 1. Scope / Trigger
+
+- 触发：需要在 AutoDL 容器内 `git clone` / `git pull` 本仓库或其它 GitHub 仓库。
+- 适用：任何依赖 GitHub 的部署步骤（`install.sh` 克隆 DiffSynth-Studio、更新脚本、人工拉取）。
+
+### 2. Signatures
+
+- 诊断：
+
+  ```bash
+  unset http_proxy https_proxy; git ls-remote origin main   # 直连
+  source /etc/network_turbo;    git ls-remote origin main   # 走学术加速
+  cat /etc/network_turbo; env | grep -i proxy               # 看代理形态
+  ```
+
+- 可用替代路径（公开仓库只读拉取，无需凭证）：
+
+  ```bash
+  git remote add mirror https://<mirror-domain>/https://github.com/<owner>/<repo>.git
+  git fetch mirror && git merge --ff-only mirror/main
+  git remote remove mirror
+  ```
+
+### 3. Contracts
+
+- **AutoDL 学术加速（`/etc/network_turbo`）的边界**：仅代理 `github.com`、`githubusercontent.com`、
+  `githubassets.com`、`huggingface.co` 四个域名；通过 `http_proxy`/`https_proxy` 生效，代理地址是
+  集群内网 RFC1918 地址（实测 `http://172.20.0.113:12798`），**用户无法调参或换上游**。官方明确声明
+  "不承诺稳定性保证"，且"若遇恶意攻击等情况将随时停止该加速服务"。**不得把它当作稳定通道依赖。**
+- **`no_proxy` 已含魔搭域**（`modelscope.com`/`aliyuncs.com`/`tencentyun.com`/`wisemodel.cn`），
+  故模型权重下载本就绕过代理直连，与 `install.sh` 中 `accel_off` 后再下载的设计一致。
+- **镜像只读、用完即删**：镜像路线仅用于公开仓库的只读拉取。**不得**用
+  `git config --global url.<mirror>.insteadOf` 全局重写——那会把 `push` 也劫持到第三方 CDN。
+  `origin` 必须保持指向 `github.com`，镜像只作临时取数通道。
+- **本仓库为 public**：读取不需要任何 token/key，因而镜像路线无凭证泄露之虞。
+
+### 4. Validation & Error Matrix
+
+| 路径 | 现象 | 含义 |
+|---|---|---|
+| 直连 `github.com` | `GnuTLS recv error (-110): The TLS connection was non-properly terminated` | TLS 握手被中途掐断，连接未建立 |
+| 走 `/etc/network_turbo` | `The requested URL returned error: 503` | 连接已建立，代理上游回"服务不可用" |
+| 走代理 + `http.version=HTTP/1.1` | 仍 503 | 与 HTTP/2 无关，问题在代理上游 |
+| `ssh -T -p 443 git@ssh.github.com` | `Permission denied (publickey)` | **连接是通的**（见 Gotcha）；仅缺 GitHub 上登记的公钥 |
+| 镜像 `git fetch mirror` | 成功 fast-forward | 走另一条 CDN 路径，绕开上述两个堵点 |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**：`unset` 代理 → 镜像 `fetch` → `merge --ff-only` → `remote remove`；代码到位，`origin` 未被污染。
+- **Base**：GitHub 恰好可达时直接 `git pull --ff-only origin main`，无需镜像。
+- **Bad**：把学术加速当稳定通道反复重试且无兜底；或配 `insteadOf` 全局重写把 push 也送进第三方 CDN。
+
+### 6. Tests Required
+
+- 拉取后断言 `git log --oneline -1` 的 HEAD 与目标提交一致，且 `git remote -v` 只剩 `origin`。
+- 断言 `git status` 无意外本地修改（`--ff-only` 应保证 fast-forward）。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```bash
+# 反复重试一个官方声明"不承诺稳定"的代理，且没有兜底路径
+source /etc/network_turbo
+for i in $(seq 1 8); do git pull --ff-only origin main; sleep 15; done
+
+# 把镜像配成全局重写：push 也会走第三方 CDN
+git config --global url."https://ghproxy.net/https://github.com/".insteadOf "https://github.com/"
+```
+
+#### Correct
+
+```bash
+unset http_proxy https_proxy                    # 镜像走直连，别让学术代理插手
+git remote add mirror https://ghfast.top/https://github.com/wxh6667/mmax-api.git
+git fetch mirror && git merge --ff-only mirror/main
+git remote remove mirror                        # 用完即删：镜像域名寿命短
+```
+
+### Gotcha: `ssh -T` 的 `Permission denied (publickey)` 常被误读为"网络不通"
+
+- **现象**：`ssh -T -p 443 git@ssh.github.com` 回 `Permission denied (publickey)`，据此判断 SSH over 443 走不通。
+- **误判点**：该报错**恰恰证明连接是通的**——`Warning: Permanently added '[ssh.github.com]:443' ...
+  to the list of known hosts` 说明 SSH 握手已完成、主机密钥已交换，卡住的是认证而非网络。
+- **正确解读**：`Permission denied (publickey)` = 服务器认不出你的身份，即容器里没有已登记到 GitHub 的公钥。
+  GitHub **不允许匿名 SSH**，故走 SSH 必须有 key；而**公开仓库走 HTTPS 匿名即可读**，通常无需折腾 SSH。
+
+### Gotcha: 镜像域名寿命短，且"怕泄露"不该套用到公开仓库上
+
+- **事实**：`wxh6667/mmax-api` 的 `visibility=public`（匿名请求 `api.github.com` 返回 200）。
+- **推论**：拉取代码无需任何凭证；镜像路线因而是匿名只读，不存在凭证泄露风险。**不要**因为把私有仓库的
+  顾虑错套到公开仓库上而放弃镜像路线。
+- **注意**：镜像域名会失效，需现查现用——AutoDL 官方文档给出的 GitHub 跳转页是 `ghproxy.link`
+  （HuggingFace 对应 `hf-mirror.com`），页面上列出当前可用域名。实测可用：`ghproxy.net`、`gh-proxy.com`、
+  `ghfast.top`、`gh.llkk.cc`。
