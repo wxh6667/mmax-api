@@ -78,3 +78,20 @@ snapshot_download(
 # 先校验挂载点，未挂载则明确失败
 if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" >&2; exit 1; fi
 ```
+
+---
+
+## Common Mistakes / Gotchas
+
+### Gotcha: `df` 看不到 AutoDL 数据盘（bind mount）
+
+- **现象**：`df -h` 里没有 `/root/autodl-tmp` 这一行（只有 `/dev/md0` 挂在 `/init`），据此会误判"数据盘未挂载"。
+- **原因**：AutoDL 容器里数据盘以 **bind mount** 形式挂载，`df` 默认不列出 bind mount。
+- **正确判据**：用 `findmnt /root/autodl-tmp` 或 `mountpoint /root/autodl-tmp` 判断。
+  `mountpoint -q` 也正是 `install.sh` 守卫采用的判据，能正确识别已挂载的数据盘。**不要只看 `df`**。
+
+### Gotcha: 无卡模式没有 GPU，且 CPU/内存极低
+
+- 无卡模式（面板 `GPU: No devices were found`，常见 0.5 核 / 2GB）可 clone 代码、装环境、下模型，
+  但**跑不了 H3 / HiDream 推理**；且 0.5 核 2GB 下 `pip install` torch+CUDA（≈3.6GB wheel）会很慢甚至 OOM。
+- 结论：**安装与推理都在 GPU 模式下进行**。
