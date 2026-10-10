@@ -20,8 +20,11 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "找不到 Python：$PYTHON_BIN，请先执行 bash scripts/install.sh。"
   exit 1
 fi
-if [[ ! -d "$DIFFSYNTH_PATH/diffsynth" ]]; then
-  echo "找不到 DiffSynth：$DIFFSYNTH_PATH，请先执行 bash scripts/install.sh。"
+# 判据是"diffsynth 能否被 import"，而非".deps 下的 clone 目录是否存在"：install.sh 在 GitHub
+# 不可达时会回退到 PyPI 包，此时 diffsynth 在 venv 的 site-packages 里，.deps/DiffSynth-Studio
+# 本就不存在。沿用目录判据会把这种（AutoDL 上很常见的）正常安装误判成"未安装"而拒绝启动。
+if ! "$PYTHON_BIN" -c "import diffsynth" >/dev/null 2>&1; then
+  echo "找不到可用的 DiffSynth（$PYTHON_BIN 无法 import diffsynth），请先执行 bash scripts/install.sh。"
   exit 1
 fi
 

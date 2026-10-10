@@ -244,6 +244,20 @@ DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torch==$base_torch torchaudio==$ba
 - **正确**：冒烟校验要显式 import torchcodec 的具体符号（`AudioDecoder` / `AudioEncoder`），
   并用 `command -v ffmpeg` 单独查二进制。判据是"mmax 实际用到什么"，而非"能 import 什么"。
 
+### Gotcha: "DiffSynth 是否可用"不能用 clone 目录是否存在来判断
+
+- **现象**：`install.sh` 报 `INSTALL DONE`，紧接着 `bash scripts/restart.sh` 却打印
+  "找不到 DiffSynth：/root/autodl-tmp/mmax/.deps/DiffSynth-Studio，请先执行 bash scripts/install.sh"，
+  服务起不来 —— 即 prd 禁止的"装上了但跑不了"。
+- **原因**：`start.sh` 原用 `[[ -d "$DIFFSYNTH_PATH/diffsynth" ]]` 判断可用性。该目录只在 GitHub
+  clone 成功时存在；GitHub 不可达、`install.sh` 回退到 PyPI 包时，diffsynth 在 venv 的
+  site-packages 里，这个目录**本就不该存在**。而 AutoDL 上 GitHub 常态不可达，故该误判是常态。
+- **正确**：判据用 `"$PYTHON_BIN" -c "import diffsynth"`——要判断的是"依赖是否可用"，而非
+  "某个目录是否存在"；后者只是前者的一种（既非充分也非必要）实现。
+- **注意别"统一"错**：`install.sh` 里同样的 `[[ -d "$DIFFSYNTH_PATH/diffsynth" ]]` 是**正确**的——
+  那里问的是"源码是否已在本地"，据此选择 `-e` 还是 PyPI 安装路径。**同一个判据在语义不同处不可照搬**，
+  先问清"要判断的是可用性还是来源"。
+
 ---
 
 ## Scenario: 在 AutoDL 容器上拉取代码（GitHub 直连与学术加速均不可用）
