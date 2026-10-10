@@ -1,0 +1,1 @@
+{"file": ".trellis/tasks/10-09-h3-newapi-optimize/research/deployment-disk-sizing.md", "reason": "验收依据：核对下载后仅存在 4 个 .safetensors（≈27.7GB）、系统盘不被静默写入、pip 缓存无残留。"}

@@ -1,0 +1,1 @@
+{"file": ".trellis/tasks/10-09-h3-newapi-optimize/research/deployment-disk-sizing.md", "reason": "体积与来源证据：H3 NF4 4 个必需文件名及大小、整仓 72.5GB、pip wheel ~3.6GB、AutoDL 数据盘/系统盘事实。实现 allow_patterns、pip 缓存清理与数据盘守卫的取值依据。"}
