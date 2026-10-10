@@ -72,11 +72,27 @@ if [[ "${MMAX_PIP_NO_CACHE:-0}" == "1" ]]; then
   PIP_CACHE_FLAG="--no-cache-dir"
 fi
 
-# torchvision 与 [audio] 里的 torchaudio 同样无上界：若不钉住 torch，pip 解析最新 torchvision
-# 时会连带把 torch 升到当前最新，复用镜像 torch 的意义被抵消，又要多下 ≈3.6GB。
-# 用户已在 MMAX_DIFFSYNTH_CONSTRAINTS 里钉了 torch 时，不再追加第二个 torch 规格（否则 pip 直接冲突）。
+# [audio] extra 里的 torchaudio / torchcodec 对 torch 版本毫无保护，必须一并钉住：
+#   - torchaudio 2.11.0 的 requires 是空的（它把 torch 钉版删了），pip 于是装上一个为 torch 2.11 /
+#     CUDA 13 编译的版本，import 时报 "OSError: libcudart.so.13: cannot open shared object file"。
+#   - torchcodec 所有版本都不声明 torch 依赖，且二者的配套关系无公式，只能查官方兼容表。
+# 用户已在 MMAX_DIFFSYNTH_CONSTRAINTS 里钉了 torch 时，不再追加（否则 pip 直接冲突）。
 # 正则放在变量里：`[=<>!~]` 直接写进 [[ =~ ]] 会被 bash 当成重定向/比较运算符而使脚本语法错误。
 TORCH_PIN_RE='(^|[[:space:]])torch[[:space:]]*[=<>!~]'
+
+# torchcodec 官方兼容表（https://github.com/pytorch/torchcodec#installing-torchcodec），按 torch 次版本查：
+#   torch 2.7 -> 0.5 | 2.8 -> 0.7 | 2.9 -> 0.9 | 2.10 -> 0.10 | 2.11 -> 0.11
+# 表里没有的 torch 版本返回空，调用方据此告警，而不是静默放行一个可能 ABI 不匹配的版本。
+torchcodec_for() {
+  case "$1" in
+    2.7)  echo "0.5" ;;
+    2.8)  echo "0.7" ;;
+    2.9)  echo "0.9" ;;
+    2.10) echo "0.10" ;;
+    2.11) echo "0.11" ;;
+    *)    echo "" ;;
+  esac
+}
 
 if [[ "$VENV_SYSTEM_SITE" != "1" ]]; then
   echo "[deps] MMAX_VENV_SYSTEM_SITE=$VENV_SYSTEM_SITE: isolated venv; pip resolves and downloads torch itself (~3.6GB, slow)." >&2
@@ -87,8 +103,16 @@ else
   elif [[ "$DIFFSYNTH_CONSTRAINTS" =~ $TORCH_PIN_RE ]]; then
     echo "[deps] MMAX_DIFFSYNTH_CONSTRAINTS already pins torch; not adding torch==$base_torch."
   else
-    DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torch==$base_torch"
-    echo "[deps] Reusing image torch $base_torch (venv --system-site-packages)."
+    torchcodec_ver="$(torchcodec_for "${base_torch%.*}")"
+    DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torch==$base_torch torchaudio==$base_torch"
+    if [[ -n "$torchcodec_ver" ]]; then
+      DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torchcodec==$torchcodec_ver"
+      echo "[deps] Reusing image torch $base_torch; also pinning torchaudio==$base_torch torchcodec==$torchcodec_ver."
+    else
+      echo "[deps] WARNING: base torch $base_torch is not in the torchcodec compatibility table." >&2
+      echo "[deps] WARNING: torchcodec stays unpinned and may be ABI-incompatible with it." >&2
+      echo "[deps] WARNING: add a '${base_torch%.*} -> <torchcodec>' entry to torchcodec_for() in this script." >&2
+    fi
   fi
 fi
 
@@ -174,28 +198,45 @@ fi
 # 依赖冒烟校验：H3 依赖在 import 阶段即被触发，缺失必须在这里暴露，而不是等运行时第一条请求
 # 才报 ModuleNotFoundError。刻意放在模型下载（≈28GB）之前——慢链路上先失败远比下完再失败划算。
 # 无卡模式下 cuda=False 属预期，不作为失败条件；打印版本便于发现 --system-site-packages 的旧版本遮蔽。
+#
+# ffmpeg 二进制得单独查：mmax 的 H3 后处理直接 shell 调用它（mmax_api/backends/h3.py 里的 subprocess.run），
+# 它不在任何 Python import 路径上，下面的 import 校验抓不到它。
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "[verify] ERROR: ffmpeg not found on PATH; mmax's H3 post-processing shells out to it (mmax_api/backends/h3.py)." >&2
+  echo "[verify] Install it (e.g. 'apt-get install -y ffmpeg') and re-run this script." >&2
+  exit 1
+fi
+echo "[verify] ffmpeg: $(ffmpeg -version 2>/dev/null | head -n 1)"
+
 if ! "$PYTHON_BIN" - <<'PY'
 import importlib
 
-for mod in ("torch", "torchvision", "torchaudio", "av", "transformers", "fastapi", "uvicorn"):
+for mod in ("torch", "torchvision", "torchaudio", "av", "torchcodec", "transformers", "fastapi", "uvicorn"):
     importlib.import_module(mod)
+# torchaudio / torchcodec 与 torch 是 ABI 绑定的：版本错位（例如 torchcodec 为更高 CUDA 编译）必须在这里暴露。
+# diffsynth 对 torchcodec 是函数内懒加载，只 import 管线根本触发不到它（这正是它曾漏过校验的原因），故显式取符号。
+from torchcodec.decoders import AudioDecoder  # noqa: F401
+from torchcodec.encoders import AudioEncoder  # noqa: F401
 from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline  # noqa: F401
 
 import fastapi
 import torch
+import torchaudio
+import torchcodec
 import torchvision
 import transformers
 import uvicorn
 
 print(
     f"[verify] torch={torch.__version__} torchvision={torchvision.__version__} "
+    f"torchaudio={torchaudio.__version__} torchcodec={torchcodec.__version__} "
     f"cuda={torch.cuda.is_available()} transformers={transformers.__version__} "
     f"fastapi={fastapi.__version__} uvicorn={uvicorn.__version__}"
 )
 PY
 then
-  echo "[verify] ERROR: dependencies incomplete (torch/torchvision/torchaudio/av/transformers/fastapi/uvicorn or the H3 pipeline failed to import)." >&2
-  echo "[verify] Check the pip output above; if av/torchaudio are missing, confirm the diffsynth [${DIFFSYNTH_EXTRAS}] extra was installed." >&2
+  echo "[verify] ERROR: dependencies incomplete (torch/torchvision/torchaudio/torchcodec/av/transformers/fastapi/uvicorn or the H3 pipeline failed to import)." >&2
+  echo "[verify] Check the pip output above; if av/torchaudio/torchcodec are missing, confirm the diffsynth [${DIFFSYNTH_EXTRAS}] extra was installed." >&2
   exit 1
 fi
 
