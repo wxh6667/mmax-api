@@ -313,4 +313,10 @@ fi
 
 echo "INSTALL DONE."
 echo "Python: $PYTHON_BIN"
-echo "DiffSynth: $DIFFSYNTH_PATH"
+# 与上面的安装分支同一判据：只有 clone 成功时本地才有 diffsynth 包。不可无条件打印 DIFFSYNTH_PATH——
+# clone 失败回退 PyPI 时该目录并不存在，这行会谎报"用的是本地 clone"，与 [deps] 的失败日志自相矛盾。
+if [[ -d "$DIFFSYNTH_PATH/diffsynth" ]]; then
+  echo "DiffSynth: $DIFFSYNTH_PATH (local clone, editable)"
+else
+  echo "DiffSynth: PyPI package 'diffsynth' (no local clone at $DIFFSYNTH_PATH)"
+fi
