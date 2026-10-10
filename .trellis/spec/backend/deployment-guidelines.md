@@ -122,11 +122,27 @@ if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" 
 - **必须带 `[audio]` extra**：`mmax_api/backends/h3.py` 在 import 阶段即触发
   `diffsynth.utils.data.audio`（顶层 `import torchaudio`）与 `diffsynth.utils.data.audio_video`（顶层 `import av`），
   二者属 diffsynth 的 `[audio]` extra、**默认不装**。两条安装路径（本地 clone 的 `-e`、PyPI 回退）都必须带上。
-- **必须约束版本**：diffsynth 对 `torch`/`transformers`/`torchvision` 几无上界。复用镜像 torch 时自动追加
-  `torch==<探测到的镜像版本>`，防止 pip 解析最新 torchvision 时连带升级 torch；用户已自钉 torch 则跳过并提示。
-- **冒烟校验放在模型下载之前**：依赖装完即 import
-  `torch/torchvision/torchaudio/av/transformers/fastapi/uvicorn` 与 `MiniMaxH3Pipeline`，失败 `exit 1`。
-  放在 ≈28GB 模型下载之前，避免下完才发现依赖坏。
+- **必须钉住整个 torch 家族，不只是 `torch`**：diffsynth 对 `torch`/`transformers`/`torchvision` 几无上界，
+  而 `[audio]` extra 里的 `torchaudio` / `torchcodec` **连"受 torch 约束"都谈不上**——实测
+  `torchaudio 2.11.0` 的 `requires` 是**空的**（它把 torch 钉版删了），`torchcodec` 任何版本都**不声明**
+  torch 依赖。只钉 `torch` 会让二者漂到为其配套的更高 torch / CUDA 编译的版本，import 时
+  `OSError: libcudart.so.13: cannot open shared object file`（已在 AutoDL 容器上确定性复现）。
+  复用镜像 torch 时必须同时追加 `torch==<base> torchaudio==<base> torchcodec==<按兼容表查到的次版本>`；
+  用户已自钉 torch 则跳过并提示（避免两个冲突的 torch 规格）。
+- **torchcodec 版本查表，不猜**：torchcodec 与 torch 的配套关系**没有依赖声明可依**（见上），只能按官方
+  兼容表 `https://github.com/pytorch/torchcodec#installing-torchcodec` 映射（脚本内 `torchcodec_for()`：
+  2.7→0.5 / 2.8→0.7 / 2.9→0.9 / 2.10→0.10 / 2.11→0.11）。表里没有该 torch 次版本时**保持 torchcodec
+  不钉**并打 `WARNING` 提示补表，而不是静默放行一个可能 ABI 不匹配的版本。
+- **冒烟校验必须覆盖"非 import 型"与"懒加载"两类盲点**：依赖装完即 import
+  `torch/torchvision/torchaudio/torchcodec/av/transformers/fastapi/uvicorn` 与 `MiniMaxH3Pipeline`。
+  额外两项不可省：
+  - **显式** `from torchcodec.decoders import AudioDecoder` / `from torchcodec.encoders import AudioEncoder`
+    ——diffsynth 对 torchcodec 是**函数内懒加载**，只 import `MiniMaxH3Pipeline` 永远触发不到它。
+    注意区分两件事：上一版校验的 import 列表**已含 `torchaudio`**，所以它**抓住了** `libcudart.so.13`
+    （fail-fast 正常生效）；上一版的真正盲点只有 torchcodec 这一个。
+  - `command -v ffmpeg` 检查二进制存在——mmax 的 H3 后处理用 `subprocess.run(["ffmpeg", …])` 直接调用它，
+    ffmpeg **不在任何 Python import 路径上**，import 校验抓不到。
+  失败一律 `exit 1`。整段校验刻意放在 ≈28GB 模型下载**之前**，避免下完才发现依赖坏。
 - **pip 缓存：安装期保留、最后 purge**：慢链路上保留缓存使失败重试只需补差量；`pip cache purge` 放最后一步，
   只在冒烟校验通过后执行。
 
@@ -135,25 +151,31 @@ if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" 
 | 条件 | 行为 |
 |---|---|
 | `MMAX_VENV_SYSTEM_SITE=0` | stderr 告警"将自行下载完整 torch" |
-| 复用镜像 torch 且用户未钉 torch | 自动加 `torch==<镜像版本>` |
+| 复用镜像 torch 且用户未钉 torch | 追加 `torch==<base> torchaudio==<base> torchcodec==<表查值>` |
+| torch 次版本不在 torchcodec 兼容表 | 打 3 行 `WARNING`；torchcodec **保持不钉**，torch/torchaudio 照钉 |
 | 用户已在 `MMAX_DIFFSYNTH_CONSTRAINTS` 钉了 torch | 不追加，打印提示（避免两个冲突的 torch 规格） |
 | 已有 `.venv` 且 system-site 属性不符 | 打印 `WARNING` + 提示重建，**不擅自删除** venv |
+| ffmpeg 二进制不在 `PATH` | stderr 明确错误 + `exit 1`（早于模型下载） |
 | 冒烟校验任一 import 失败 | stderr 明确错误 + `exit 1`；不打印 `INSTALL DONE`、不执行 purge |
 | `pip cache purge` 失败 | `WARNING`，不中断 |
 
 ### 5. Good / Base / Bad Cases
 
-- **Good**：复用镜像 torch → 带 `[audio]` + 约束 → 冒烟通过 → 下模型 → 最后 purge → `INSTALL DONE`。
+- **Good**：复用镜像 torch → 带 `[audio]` + 钉全家族（含 torchcodec 查表）→ 冒烟（含 ffmpeg 二进制与
+  torchcodec 显式 import）通过 → 下模型 → 最后 purge → `INSTALL DONE`。
 - **Base**：重复运行；依赖齐备，pip 无事可做；校验通过。
 - **Bad**：裸装 `diffsynth`（无 `[audio]`）→ 服务能起、`/health` 正常，但第一条 H3 请求
   `ModuleNotFoundError: No module named 'torchaudio'`。
+- **Bad**：带 `[audio]` 但**只钉 `torch`** → torchaudio 漂到 `2.11.0`（为 CUDA 13 编译），
+  import 报 `OSError: libcudart.so.13`，服务连起都起不来。
 
 ### 6. Tests Required
 
 - `bash -n scripts/install.sh` 与 `shellcheck scripts/install.sh` 必须通过。
 - `grep -c -- "--no-cache-dir" scripts/install.sh` 必须为 `1`（只在 `PIP_CACHE_FLAG` 定义处）。
 - 断言 `[audio]` 同时出现在 clone 路径与 PyPI 回退路径。
-- 断言 冒烟校验行号 < 模型下载行号 < `pip cache purge` 行号。
+- 断言 `torchcodec_for 2.8` 输出 `0.7`，未知次版本输出空（据此走 WARNING 分支）。
+- 断言 依赖安装 → 冒烟校验（含 ffmpeg 检查）的行号 < 模型下载行号 < `pip cache purge` 行号。
 - 冒烟校验失败时脚本必须非零退出、不打印 `INSTALL DONE`、不执行 purge。
 
 ### 7. Wrong vs Correct
@@ -169,6 +191,18 @@ if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" 
 #### Correct
 
 ```bash
+# 只钉 torch：torchaudio / torchcodec 仍漂到为更高 torch/CUDA 编译的版本
+DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torch==$base_torch"
+"$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG "diffsynth[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
+```
+
+#### Correct
+
+```bash
+# 钉全家族；torchcodec 按官方兼容表查（2.8 -> 0.7），查不到则告警不钉
+torchcodec_ver="$(torchcodec_for "${base_torch%.*}")"
+DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torch==$base_torch torchaudio==$base_torch"
+[[ -n "$torchcodec_ver" ]] && DIFFSYNTH_CONSTRAINTS="$DIFFSYNTH_CONSTRAINTS torchcodec==$torchcodec_ver"
 "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG -e "${DIFFSYNTH_PATH}[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
 "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG "diffsynth[${DIFFSYNTH_EXTRAS}]" $DIFFSYNTH_CONSTRAINTS
 ```
@@ -189,6 +223,26 @@ if is_mountpoint "$DATA_DIR"; then ... else echo "ERROR: data disk not mounted" 
 - **现象**：`[[ "$s" =~ [=<>!~] ]]` 使整个脚本 `bash -n` 报 `syntax error near ...`。
 - **原因**：`[[ ]]` 内 `<`/`>` 是重定向/比较运算符，bash 解析器不理解正则字符类。
 - **正确**：把正则放进变量再引用：`RE='[=<>!~]'; [[ "$s" =~ $RE ]]`。
+
+### Gotcha: `torchaudio` / `torchcodec` 不受 `torch` 的版本约束保护
+
+- **现象**：脚本已追加 `torch==2.8.0`，pip 仍装上 `torchaudio-2.11.0` + `torchcodec-0.17.0`，
+  冒烟校验报 `OSError: libcudart.so.13: cannot open shared object file`。
+- **原因**：查 PyPI 元数据可知，`torchaudio 2.11.0` 的 `requires` 是**空列表**（它把 torch 钉版删了），
+  `torchcodec` 任何版本都**不声明** torch 依赖。pip 因而自由选最新版，装到为 torch 2.11 / CUDA 13
+  编译的二进制，与镜像的 `torch 2.8.0+cu128` ABI 不匹配。
+- **正确**：`torchaudio` 钉成与 `torch` 同版本，`torchcodec` 按官方兼容表查（见 §3）。
+  **不要**以为"钉了 torch 就安全了"——版本约束是逐包声明的，家族里每个成员都要单独确认。
+- **验证过的现象**：`pin torchaudio==2.8.0` 时 pip 实际装的是 `2.8.0+cu128`（PEP 440 local
+  version 满足 `==2.8.0`），即"同版本"不代表"无 local tag"，比对版本号时要去掉 `+` 后缀。
+
+### Gotcha: 冒烟校验会被"懒加载"与"非 import 型依赖"同时绕过
+
+- **现象**：冒烟校验 import `MiniMaxH3Pipeline` 全过，torchcodec 的 ABI 错误却漏到运行时。
+- **原因**：diffsynth 在**函数内部**才 `from torchcodec.decoders import AudioDecoder`，import 管线触发
+  不到它；同理 `ffmpeg` 是 `subprocess.run` 调用的**外部二进制**，不在任何 Python import 路径上。
+- **正确**：冒烟校验要显式 import torchcodec 的具体符号（`AudioDecoder` / `AudioEncoder`），
+  并用 `command -v ffmpeg` 单独查二进制。判据是"mmax 实际用到什么"，而非"能 import 什么"。
 
 ---
 
