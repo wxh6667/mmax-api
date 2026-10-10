@@ -12,7 +12,7 @@
   "assignee": "claude",
   "createdAt": "2026-10-10",
   "completedAt": null,
-  "branch": "fix/install-model-download",
+  "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
