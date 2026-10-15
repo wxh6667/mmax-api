@@ -62,6 +62,10 @@ fi
 # H3 后端在 import 阶段即触发 av / torchaudio，二者属 diffsynth 的 [audio] extra（默认不装）；
 # 裸装 diffsynth 会让服务能起、但第一条 H3 请求抛 ModuleNotFoundError。
 DIFFSYNTH_EXTRAS="${MMAX_DIFFSYNTH_EXTRAS:-audio}"
+# H3 用的是 NF4 量化权重，加载时走 bitsandbytes 量化后端（diffsynth 的 quant extra）。
+# 刻意不装 diffsynth[quant]：该 extra 含 entropack[cuda13]，而这里复用镜像 torch（cu12x），
+# 会引入 CUDA 版本错位的包。bitsandbytes 单装即可满足 NF4 加载，且已在实机验证可用。
+QUANT_DEPS="${MMAX_QUANT_DEPS:-bitsandbytes}"
 # diffsynth 对 transformers 无上界，而其 transformers-5 兼容尚未收口（官方 nexusgen extra 自钉 4.49.0）。
 DIFFSYNTH_CONSTRAINTS="${MMAX_DIFFSYNTH_CONSTRAINTS:-transformers<5}"
 # 复用镜像自带 torch（venv --system-site-packages）：省 ≈3.6GB 下载，且 torch/CUDA 与镜像驱动天然匹配。
@@ -191,6 +195,12 @@ fi
 # shellcheck disable=SC2086
 "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG -e "$ROOT"
 
+# NF4 量化后端：H3 权重是 nf4 格式，diffsynth 在加载时通过 bitsandbytes 反量化。
+# 缺它时 import 与管线构造都正常，只有真正加载权重才抛 ImportError —— 所以必须在此显式安装，
+# 并由下面的冒烟校验兜住（否则服务能起、第一条请求才失败）。
+# shellcheck disable=SC2086
+"$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG $QUANT_DEPS
+
 # 魔搭（modelscope）是模型权重的下载通道，已装则复用。
 # shellcheck disable=SC2086
 "$PYTHON_BIN" -c "import modelscope" 2>/dev/null || "$PYTHON_BIN" -m pip install $PIP_CACHE_FLAG modelscope
@@ -219,6 +229,14 @@ from torchcodec.decoders import AudioDecoder  # noqa: F401
 from torchcodec.encoders import AudioEncoder  # noqa: F401
 from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline  # noqa: F401
 
+# NF4 权重加载走 bitsandbytes 量化后端。该模块对 bitsandbytes 是 try/except 懒加载：
+# 缺失时 import 不抛错，只有 validate_environment() 才 raise ImportError。因此这里必须真正
+# 调用一次，否则会重演"服务能起、第一条请求才失败"。这跟上面 torchcodec 的漏检是同一类问题。
+from diffsynth.core.quant.backends.bitsandbytes import BitsAndBytesQuantBackend
+
+BitsAndBytesQuantBackend().validate_environment()
+
+import bitsandbytes
 import fastapi
 import torch
 import torchaudio
@@ -230,13 +248,15 @@ import uvicorn
 print(
     f"[verify] torch={torch.__version__} torchvision={torchvision.__version__} "
     f"torchaudio={torchaudio.__version__} torchcodec={torchcodec.__version__} "
+    f"bitsandbytes={bitsandbytes.__version__} "
     f"cuda={torch.cuda.is_available()} transformers={transformers.__version__} "
     f"fastapi={fastapi.__version__} uvicorn={uvicorn.__version__}"
 )
 PY
 then
-  echo "[verify] ERROR: dependencies incomplete (torch/torchvision/torchaudio/torchcodec/av/transformers/fastapi/uvicorn or the H3 pipeline failed to import)." >&2
+  echo "[verify] ERROR: dependencies incomplete (torch/torchvision/torchaudio/torchcodec/bitsandbytes/av/transformers/fastapi/uvicorn or the H3 pipeline failed to import)." >&2
   echo "[verify] Check the pip output above; if av/torchaudio/torchcodec are missing, confirm the diffsynth [${DIFFSYNTH_EXTRAS}] extra was installed." >&2
+  echo "[verify] If bitsandbytes is missing, confirm MMAX_QUANT_DEPS (default 'bitsandbytes') installed cleanly." >&2
   exit 1
 fi
 
