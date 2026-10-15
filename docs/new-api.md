@@ -73,7 +73,7 @@ prompt            提示词
 seconds           1~15 秒
 size              1280x720 / 720x1280 / 1792x1024 / 1024x1792
 seed              可选整数
-steps             可选，默认 20
+steps             可选，默认 50
 input_reference   首帧，可为上传文件、URL 或 data:image
 end_reference     尾帧，同上
 ```
