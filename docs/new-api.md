@@ -134,6 +134,7 @@ API Key:    mmax/.api_key 中的 Key
 - `MMAX_DEEPSEEK_ENABLED=true`，`MMAX_DEEPSEEK_BASE_URL` 指向 Xolotl/Strata（默认 `http://127.0.0.1:8161/v1`）。
 - 上游已在跑，且 `GET /health` 里 `deepseek-v4.1-flash-1017` 的 `ready` 为 `true`。
 - 启用前停掉 H3/HiDream 的生成任务；文本模型常驻显存，不能和图片/视频同时占卡。
+- 只显示 LLM：`MMAX_H3_ENABLED=false`、`MMAX_HIDREAM_ENABLED=false`、`MMAX_EXPOSED_MODELS=deepseek-v4.1-flash-1017`；New API 的模型列表只会看到这一个。
 
 `-fast` / `-exact` 后缀会原样转发给 Xolotl 的路由；`stream=true` 按 SSE 透传。上游不可达返回 502，上游 HTTP 错误码和响应体原样返回。
 

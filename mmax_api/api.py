@@ -106,6 +106,18 @@ def _forwarded_response_headers(upstream) -> dict[str, str]:
     return forwarded
 
 
+def _visible_backends():
+    """只返回启用且在 MMAX_EXPOSED_MODELS 白名单内的模型。"""
+    backends = [
+        backend
+        for backend in (h3_backend, hidream_backend, deepseek_backend)
+        if backend.enabled
+    ]
+    if settings.exposed_models:
+        backends = [backend for backend in backends if backend.model_id in settings.exposed_models]
+    return backends
+
+
 def _public_job(job: dict) -> dict:
     data = {k: v for k, v in job.items() if k not in {"payload", "output_path"}}
     # OpenAI Video 对象会回显 prompt/seconds/size；New API 也在任务完成时
@@ -417,38 +429,25 @@ async def _run_image_jobs(
 
 @app.get("/health")
 def health():
-    h3_ok, h3_reason = h3_backend.ready()
-    hidream_ok, hidream_reason = hidream_backend.ready()
-    deepseek_ok, deepseek_reason = deepseek_backend.ready()
-    return {
-        "status": "ok",
-        "queue_pending": scheduler.pending,
-        "models": {
-            h3_backend.model_id: {"ready": h3_ok, "reason": h3_reason},
-            hidream_backend.model_id: {"ready": hidream_ok, "reason": hidream_reason},
-            deepseek_backend.model_id: {"ready": deepseek_ok, "reason": deepseek_reason},
-        },
-    }
+    models = {}
+    for backend in _visible_backends():
+        ok, reason = backend.ready()
+        models[backend.model_id] = {"ready": ok, "reason": reason}
+    return {"status": "ok", "queue_pending": scheduler.pending, "models": models}
 
 
 @app.get("/v1/models")
 def list_models(_=Depends(require_auth)):
-    h3_ok, h3_reason = h3_backend.ready()
-    hidream_ok, hidream_reason = hidream_backend.ready()
-    deepseek_ok, deepseek_reason = deepseek_backend.ready()
-    return {
-        "object": "list",
-        "data": [
-            _model_object(h3_backend.model_id, "video", h3_ok, h3_reason),
-            _model_object(hidream_backend.model_id, "image", hidream_ok, hidream_reason),
-            _model_object(deepseek_backend.model_id, "text", deepseek_ok, deepseek_reason),
-        ],
-    }
+    data = []
+    for backend in _visible_backends():
+        ok, reason = backend.ready()
+        data.append(_model_object(backend.model_id, backend.kind, ok, reason))
+    return {"object": "list", "data": data}
 
 
 @app.get("/v1/models/{model_id}")
 def retrieve_model(model_id: str, _=Depends(require_auth)):
-    for backend in (h3_backend, hidream_backend, deepseek_backend):
+    for backend in _visible_backends():
         if backend.model_id == model_id:
             ok, reason = backend.ready()
             return _model_object(backend.model_id, backend.kind, ok, reason)

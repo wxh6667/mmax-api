@@ -68,6 +68,12 @@ class Settings:
     # 部署侧实际配置的上下文长度（Xolotl 的 --ctx），用于 /v1/models 如实上报。
     deepseek_max_context: int = int(os.getenv("MMAX_DEEPSEEK_MAX_CONTEXT", "16384"))
 
+    # 只对外暴露指定模型（逗号分隔）；留空 = 显示所有已启用模型。
+    # 例：MMAX_EXPOSED_MODELS=deepseek-v4.1-flash-1017 只显示文本模型。
+    exposed_models: tuple[str, ...] = tuple(
+        value.strip() for value in os.getenv("MMAX_EXPOSED_MODELS", "").split(",") if value.strip()
+    )
+
     max_input_image_bytes: int = int(os.getenv("MMAX_MAX_INPUT_IMAGE_BYTES", str(20 * 1024 * 1024)))
 
     def resolved_api_key(self) -> str:

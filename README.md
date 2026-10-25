@@ -101,6 +101,22 @@ Xolotl 侧默认开启 conversation cache（`--conversation-cache-mib`，默认 
 
 启用前先停掉 H3/HiDream 的生成任务：文本模型常驻显存，和图片/视频不能同时占卡。配置见 `.env.example` 的 `MMAX_DEEPSEEK_*`。
 
+## 模型开关
+
+`/v1/models`、`/v1/models/{id}` 和 `/health` 只显示“已启用且在白名单内”的模型：
+
+- `MMAX_H3_ENABLED` / `MMAX_HIDREAM_ENABLED` / `MMAX_DEEPSEEK_ENABLED` 控制后端是否启用。
+- `MMAX_EXPOSED_MODELS` 进一步收窄对外列表（逗号分隔，留空 = 全部已启用模型）。
+
+这次只显示 LLM：
+
+```env
+MMAX_H3_ENABLED=false
+MMAX_HIDREAM_ENABLED=false
+MMAX_DEEPSEEK_ENABLED=true
+MMAX_EXPOSED_MODELS=deepseek-v4.1-flash-1017
+```
+
 ## 架构
 
 ```text

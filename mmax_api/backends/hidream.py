@@ -19,6 +19,7 @@ class HiDreamO1ImageBackend(Backend):
 
     def __init__(self) -> None:
         self.model_id = settings.hidream_model_id
+        self.enabled = settings.hidream_enabled
         self._pipe = None
 
     def _model_files(self) -> list[str]:

@@ -16,6 +16,7 @@ class DeepSeekBackend:
 
     def __init__(self) -> None:
         self.model_id = settings.deepseek_model_id
+        self.enabled = settings.deepseek_enabled
 
     def _url(self, path: str) -> str:
         return settings.deepseek_base_url.rstrip("/") + path

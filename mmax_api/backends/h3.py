@@ -49,6 +49,7 @@ class H3Backend(Backend):
 
     def __init__(self) -> None:
         self.model_id = settings.h3_model_id
+        self.enabled = settings.h3_enabled
         self._pipe = None
 
     def _paths(self) -> list[Path]:
