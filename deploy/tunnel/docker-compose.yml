@@ -1,0 +1,48 @@
+services:
+  # 在公网主机上建立到 AutoDL 的 SSH 本地转发（-L）：
+  # 本机 0.0.0.0:6006 -> AutoDL 的 127.0.0.1:6006（mmax-api）
+  tunnel:
+    image: jnovack/autossh:latest
+    container_name: mmax-tunnel
+    restart: always
+    environment:
+      - SSH_REMOTE_USER=${SSH_REMOTE_USER}
+      - SSH_REMOTE_HOST=${SSH_REMOTE_HOST}
+      - SSH_REMOTE_PORT=${SSH_REMOTE_PORT}
+      - SSH_BIND_IP=0.0.0.0
+      - SSH_TUNNEL_PORT=${LOCAL_PORT:-6006}
+      - SSH_TARGET_HOST=${TARGET_HOST:-127.0.0.1}
+      - SSH_TARGET_PORT=${TARGET_PORT:-6006}
+      - SSH_MODE=-L
+      - SSH_OPTIONS=-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new
+    volumes:
+      - ./keys/id_ed25519:/id_rsa:ro
+      - ./keys/known_hosts:/known_hosts:ro
+    networks:
+      - tunnel
+
+  # TLS + SSE 反代；只暴露 80/443
+  caddy:
+    image: caddy:2
+    container_name: mmax-caddy
+    restart: unless-stopped
+    depends_on:
+      - tunnel
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - API_DOMAIN=${API_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - tunnel
+
+networks:
+  tunnel:
+
+volumes:
+  caddy_data:
+  caddy_config:

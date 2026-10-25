@@ -1,0 +1,17 @@
+{$API_DOMAIN:localhost} {
+	encode zstd gzip
+
+	# OpenAI / Anthropic 流式接口必须关闭缓冲，否则 token 会被攒住。
+	reverse_proxy tunnel:6006 {
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
