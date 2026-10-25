@@ -5,14 +5,16 @@ import io
 import json
 import math
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from PIL import Image
 
+from .backends.deepseek import deepseek_backend
 from .backends.h3 import h3_backend
 from .backends.hidream import hidream_backend
 from .config import settings
@@ -50,15 +52,58 @@ async def api_error_handler(_request: Request, exc: APIError):
     )
 
 
-def require_auth(authorization: Optional[str] = Header(default=None)) -> None:
+def require_auth(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+) -> None:
     api_key = settings.resolved_api_key()
     if not api_key:
         raise APIError(500, "服务端尚未配置 API Key。", "server_configuration_error")
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise APIError(401, "缺少 Bearer 鉴权。", "invalid_api_key")
-    token = authorization[7:].strip()
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    elif x_api_key:
+        token = x_api_key.strip()
+    if not token:
+        raise APIError(401, "缺少 Bearer 或 x-api-key 鉴权。", "invalid_api_key")
     if not hmac.compare_digest(token, api_key):
         raise APIError(401, "API Key 不正确。", "invalid_api_key")
+
+
+_UPSTREAM_HEADER_NAMES = {
+    "x-request-id",
+    "openai-organization",
+    "openai-project",
+    "openai-processing-ms",
+    "x-ratelimit-limit-requests",
+    "x-ratelimit-limit-tokens",
+    "x-ratelimit-remaining-requests",
+    "x-ratelimit-remaining-tokens",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-reset-tokens",
+}
+
+
+def _forwarded_request_headers(request: Request) -> dict[str, str]:
+    """转发追踪/缓存相关的客户端头；鉴权和请求体头由后端自己设置。"""
+    forwarded: dict[str, str] = {}
+    for name in ("x-request-id", "openai-organization", "openai-project"):
+        value = request.headers.get(name)
+        if value:
+            forwarded[name] = value
+    for name, value in request.headers.items():
+        if name.lower().startswith("x-strata-"):
+            forwarded[name] = value
+    return forwarded
+
+
+def _forwarded_response_headers(upstream) -> dict[str, str]:
+    forwarded: dict[str, str] = {}
+    for name, value in upstream.headers.items():
+        lower = name.lower()
+        if lower in _UPSTREAM_HEADER_NAMES or lower.startswith("x-strata-"):
+            forwarded[name] = value
+    return forwarded
 
 
 def _public_job(job: dict) -> dict:
@@ -97,6 +142,22 @@ def _model_object(model_id: str, kind: str, ready: bool, reason: str | None) -> 
         endpoints = {
             "generate": "/v1/images/generations",
             "edit": "/v1/images/edits",
+        }
+    elif kind == "text":
+        capabilities = {
+            "chat": True,
+            "streaming": True,
+            "tool_calls": True,
+            "reasoning_effort": True,
+            "reasoning_content": True,
+            "prompt_cache": True,
+            "conversation_cache": True,
+            "cached_tokens": True,
+            "anthropic_messages": True,
+            "max_context": settings.deepseek_max_context,
+        }
+        endpoints = {
+            "chat_completions": "/v1/chat/completions",
         }
     else:
         capabilities = {
@@ -358,12 +419,14 @@ async def _run_image_jobs(
 def health():
     h3_ok, h3_reason = h3_backend.ready()
     hidream_ok, hidream_reason = hidream_backend.ready()
+    deepseek_ok, deepseek_reason = deepseek_backend.ready()
     return {
         "status": "ok",
         "queue_pending": scheduler.pending,
         "models": {
             h3_backend.model_id: {"ready": h3_ok, "reason": h3_reason},
             hidream_backend.model_id: {"ready": hidream_ok, "reason": hidream_reason},
+            deepseek_backend.model_id: {"ready": deepseek_ok, "reason": deepseek_reason},
         },
     }
 
@@ -372,22 +435,100 @@ def health():
 def list_models(_=Depends(require_auth)):
     h3_ok, h3_reason = h3_backend.ready()
     hidream_ok, hidream_reason = hidream_backend.ready()
+    deepseek_ok, deepseek_reason = deepseek_backend.ready()
     return {
         "object": "list",
         "data": [
             _model_object(h3_backend.model_id, "video", h3_ok, h3_reason),
             _model_object(hidream_backend.model_id, "image", hidream_ok, hidream_reason),
+            _model_object(deepseek_backend.model_id, "text", deepseek_ok, deepseek_reason),
         ],
     }
 
 
 @app.get("/v1/models/{model_id}")
 def retrieve_model(model_id: str, _=Depends(require_auth)):
-    for backend in (h3_backend, hidream_backend):
+    for backend in (h3_backend, hidream_backend, deepseek_backend):
         if backend.model_id == model_id:
             ok, reason = backend.ready()
             return _model_object(backend.model_id, backend.kind, ok, reason)
     raise APIError(404, f"模型 '{model_id}' 不存在。", "model_not_found", "model")
+
+
+async def _proxy_text_request(request: Request, opener) -> Response:
+    """把 OpenAI/Anthropic 文本请求转发给常驻的 Xolotl/Strata 上游。
+
+    代理不解析消息内容，只校验 model 与开关；流式响应按 SSE 原样透传。
+    上游不可达时返回 502，上游的 HTTP 错误码和响应体原样返回。
+    """
+    if not settings.deepseek_enabled:
+        raise APIError(404, "DeepSeek-V4.1-Flash 未启用。", "model_not_found", "model")
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise APIError(400, "请求体必须是 JSON。", "invalid_request_error") from exc
+    if not isinstance(body, dict):
+        raise APIError(400, "请求体必须是 JSON 对象。", "invalid_request_error")
+
+    model = str(body.get("model") or deepseek_backend.model_id).strip()
+    if model != deepseek_backend.model_id and not model.startswith(deepseek_backend.model_id + "-"):
+        raise APIError(404, f"文本模型 '{model}' 不存在。", "model_not_found", "model")
+
+    stream = _parse_bool(body.get("stream"), False, "stream")
+    try:
+        upstream = opener(body, extra_headers=_forwarded_request_headers(request))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+        raise APIError(exc.code, detail or f"上游返回 HTTP {exc.code}", "upstream_error") from exc
+    except Exception as exc:
+        raise APIError(502, f"上游不可达：{exc}", "upstream_unavailable") from exc
+
+    forwarded_headers = _forwarded_response_headers(upstream)
+
+    if not stream:
+        try:
+            content = upstream.read()
+            status = getattr(upstream, "status", 200)
+            content_type = upstream.headers.get("Content-Type", "application/json")
+        finally:
+            upstream.close()
+        return Response(
+            content=content,
+            status_code=status,
+            media_type=content_type,
+            headers=forwarded_headers,
+        )
+
+    def relay():
+        try:
+            while True:
+                chunk = upstream.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(
+        relay(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            **forwarded_headers,
+        },
+    )
+
+
+@app.post("/v1/chat/completions")
+async def create_chat_completion(request: Request, _=Depends(require_auth)):
+    return await _proxy_text_request(request, deepseek_backend.open_chat)
+
+
+@app.post("/v1/messages")
+async def create_message(request: Request, _=Depends(require_auth)):
+    return await _proxy_text_request(request, deepseek_backend.open_messages)
 
 
 @app.post("/v1/images/generations")

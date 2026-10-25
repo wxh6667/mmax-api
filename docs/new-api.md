@@ -118,6 +118,31 @@ tier("base", u("seconds") * 0.4)
 
 生成期间 `progress` 按去噪步数推进（5~90），可用于展示真实进度。
 
+## DeepSeek-V4.1-Flash
+
+文本模型走 New API 的标准 **OpenAI** 渠道，不需要插件。`mmax-api` 只把 `/v1/chat/completions` 转发给常驻的 Xolotl/Strata 上游。
+
+```text
+渠道类型:   OpenAI
+Base URL:   http://127.0.0.1:6006/v1
+API Key:    mmax/.api_key 中的 Key
+模型:       deepseek-v4.1-flash-1017
+```
+
+前提：
+
+- `MMAX_DEEPSEEK_ENABLED=true`，`MMAX_DEEPSEEK_BASE_URL` 指向 Xolotl/Strata（默认 `http://127.0.0.1:8161/v1`）。
+- 上游已在跑，且 `GET /health` 里 `deepseek-v4.1-flash-1017` 的 `ready` 为 `true`。
+- 启用前停掉 H3/HiDream 的生成任务；文本模型常驻显存，不能和图片/视频同时占卡。
+
+`-fast` / `-exact` 后缀会原样转发给 Xolotl 的路由；`stream=true` 按 SSE 透传。上游不可达返回 502，上游 HTTP 错误码和响应体原样返回。
+
+思考与缓存：
+
+- 请求可带 `reasoning_effort`（`low` / `high` / `max` 或 1–100）、`reasoning_budget_tokens`、`enable_thinking`。
+- 思考内容在 `choices[].message.reasoning_content`（非流式）或 `choices[].delta.reasoning_content`（流式）。
+- 缓存命中看 `usage.prompt_tokens_details.cached_tokens`；`x-ratelimit-*` / `x-request-id` 会透传。
+
 ## HiDream-O1-Image
 
 图片模型走 **Advanced Custom** 渠道，模型只填写：

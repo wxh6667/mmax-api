@@ -54,6 +54,20 @@ class Settings:
     hidream_max_reference_images: int = int(os.getenv("MMAX_HIDREAM_MAX_REFERENCE_IMAGES", "10"))
     hidream_release_vram_after_job: bool = _bool("MMAX_HIDREAM_RELEASE_VRAM_AFTER_JOB", True)
 
+    # DeepSeek-V4.1-Flash 由 Xolotl/Strata 在独立进程里常驻，本服务只做 OpenAI 兼容代理。
+    # 默认关闭，避免未部署上游时 /v1/models 里出现一个永远 not ready 的模型。
+    deepseek_enabled: bool = _bool("MMAX_DEEPSEEK_ENABLED", False)
+    deepseek_model_id: str = os.getenv("MMAX_DEEPSEEK_MODEL_ID", "deepseek-v4.1-flash-1017")
+    deepseek_base_url: str = os.getenv("MMAX_DEEPSEEK_BASE_URL", "http://127.0.0.1:8161/v1")
+    # 上游模型名。留空表示原样转发客户端 model，保留 Xolotl 的 -fast / -exact 路由后缀。
+    deepseek_upstream_model: str = os.getenv("MMAX_DEEPSEEK_UPSTREAM_MODEL", "")
+    deepseek_api_key: str = os.getenv("MMAX_DEEPSEEK_API_KEY", "")
+    # 长思考可能超过 10 分钟；默认给 30 分钟。
+    deepseek_timeout: float = float(os.getenv("MMAX_DEEPSEEK_TIMEOUT", "1800"))
+    deepseek_ready_timeout: float = float(os.getenv("MMAX_DEEPSEEK_READY_TIMEOUT", "2"))
+    # 部署侧实际配置的上下文长度（Xolotl 的 --ctx），用于 /v1/models 如实上报。
+    deepseek_max_context: int = int(os.getenv("MMAX_DEEPSEEK_MAX_CONTEXT", "16384"))
+
     max_input_image_bytes: int = int(os.getenv("MMAX_MAX_INPUT_IMAGE_BYTES", str(20 * 1024 * 1024)))
 
     def resolved_api_key(self) -> str:

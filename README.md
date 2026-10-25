@@ -19,6 +19,8 @@ GET  /health
 GET  /v1/models
 GET  /v1/models/{model_id}
 
+POST /v1/chat/completions
+
 POST /v1/images/generations
 POST /v1/images/edits
 GET  /v1/images/{image_id}
@@ -81,16 +83,32 @@ noise_scale = 8.0
 
 当前部署使用 FL2VA checkpoint，因此参考图能力属于**视频帧条件**。独立 Ref2VA“人物/风格参考但不作为视频帧”需要另一套 Ref2VA 权重，当前没有启用。
 
+### DeepSeek-V4.1-Flash
+
+文本模型由 **Xolotl/Strata** 在独立进程里常驻（默认 `http://127.0.0.1:8161/v1`），`mmax-api` 只代理 `/v1/chat/completions`，不加载权重，也不进入图片/视频的 FIFO 队列。
+
+当前支持：
+
+- OpenAI Chat Completions，非流式和 `stream=true` 流式
+- 思考输出：`reasoning_content`（流式 delta 和非流式 message 都保留）
+- 思考控制：`reasoning_effort`（`low` / `high` / `max` 或 1–100）、`reasoning_budget_tokens`、`enable_thinking`
+- `tools` / `tool_calls`
+- 缓存：Xolotl 的 conversation cache / 前缀复用；`usage.prompt_tokens_details.cached_tokens` 和 `x-ratelimit-*` / `x-request-id` 原样透传
+- 模型名后缀 `-fast` / `-exact` 原样转发给 Xolotl 的路由
+- 上游不可达返回 502；上游 HTTP 错误码和响应体原样返回
+
+Xolotl 侧默认开启 conversation cache（`--conversation-cache-mib`，默认 8192 MiB）；30GB 内存的机器建议降到 2048 MiB，给 arena 留空间。
+
+启用前先停掉 H3/HiDream 的生成任务：文本模型常驻显存，和图片/视频不能同时占卡。配置见 `.env.example` 的 `MMAX_DEEPSEEK_*`。
+
 ## 架构
 
 ```text
 HTTP 请求
-   ↓
-统一 FIFO 队列
-   ↓
-唯一 GPU Worker
-   ├── MiniMax H3
-   └── HiDream-O1-Image Full
+   ├── /v1/images/*、/v1/videos/* → 统一 FIFO 队列 → 唯一 GPU Worker
+   │                                ├── MiniMax H3
+   │                                └── HiDream-O1-Image Full
+   └── /v1/chat/completions → Xolotl/Strata 上游（独立进程，OpenAI 兼容）
    ↓
 outputs
 ```
@@ -114,7 +132,8 @@ HiDream 使用 DiffSynth BF16 CPU offload / BF16 GPU 计算，并根据 `MMAX_HI
 │   └── .api_key
 ├── models/
 │   ├── h3/
-│   └── hidream-o1-image/
+│   ├── hidream-o1-image/
+│   └── deepseek-v4.1-flash-1017/
 └── outputs/
     ├── videos/
     └── images/
