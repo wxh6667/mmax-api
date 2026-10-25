@@ -557,6 +557,8 @@ async def create_image_generation(request: Request, _=Depends(require_auth)):
         raise APIError(400, "prompt 不能为空。", param="prompt")
     if model != hidream_backend.model_id:
         raise APIError(404, f"图片模型 '{model}' 不存在。", "model_not_found", "model")
+    if not hidream_backend.enabled:
+        raise APIError(404, "图片模型未启用。", "model_not_found", "model")
     width, height = _parse_size(size)
 
     return await _run_image_jobs(
@@ -600,6 +602,8 @@ async def create_image_edit(request: Request, _=Depends(require_auth)):
         raise APIError(400, "prompt 不能为空。", param="prompt")
     if model != hidream_backend.model_id:
         raise APIError(404, f"图片模型 '{model}' 不存在。", "model_not_found", "model")
+    if not hidream_backend.enabled:
+        raise APIError(404, "图片模型未启用。", "model_not_found", "model")
     if body.get("mask") not in (None, ""):
         raise APIError(400, "HiDream 当前接口不支持 mask 局部编辑。", "unsupported_capability", "mask")
 
@@ -724,6 +728,8 @@ async def create_video(request: Request, _=Depends(require_auth)):
         raise APIError(400, "prompt 不能为空。", param="prompt")
     if model != h3_backend.model_id:
         raise APIError(404, f"视频模型 '{model}' 不存在。", "model_not_found", "model")
+    if not h3_backend.enabled:
+        raise APIError(404, "视频模型未启用。", "model_not_found", "model")
     if size not in h3_backend.VALID_SIZES:
         raise APIError(400, "不支持该视频尺寸。", param="size")
 
